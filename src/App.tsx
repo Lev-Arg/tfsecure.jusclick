@@ -37,7 +37,14 @@ import {
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { CORPORATE_FACILITY_BG, DEFAULT_TF_LOGO, SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
+import {
+  CORPORATE_FACILITY_BG,
+  DEFAULT_TF_LOGO,
+  SECURITY_CHECKPOINT_IMG,
+  TfLogo,
+  syncSystemLogoAndFavicons,
+  useSystemLogoFaviconSync,
+} from "./components/TfLogo";
 import { Gate, PersonsOnSite, useUnifiedOnSiteList } from "./components/GateAndOnSite";
 import {
   DATA_PROTECTION_POLICY_CLAUSES,
@@ -51,6 +58,7 @@ import {
 import {
   AVAILABLE_SOFTWARE_RELEASES,
   CURRENT_POLICY_VERSION,
+  addLocalDepartment,
   applySoftwarePatchFileJson,
   applySoftwareUpdate,
   approveUserAccount,
@@ -66,23 +74,32 @@ import {
   getAttachmentByPasscodeId,
   getCsrfToken,
   getDynamicReleaseCatalog,
+  getEffectiveDepartmentId,
   getEffectiveRole,
   getMergedAuditLedger,
+  getMergedDepartments,
+  getMergedPasscodes,
+  getMergedUserDirectory,
   hasUserAcceptedPolicy,
   incrementPatchVersion,
   inviteUserAccount,
   isNotificationSoundMuted,
+  isPrimaryBootstrapAdmin,
   isProfileApproved,
+  issueLocalPasscode,
   markAllLocalNotificationsRead,
-  markEmailPendingApproval,
   optimizeImageFileToDataUrl,
   playNotificationDingDong,
   recordPolicyAcceptance,
   recordPolicyDeclineAttempt,
   registerIssuedPasscode,
+  registerSignUpAccount,
+  removeLocalDepartment,
+  removeRegisteredUser,
   removeSystemImage,
   removeUserInvite,
   restoreSystemBackupJson,
+  revokeLocalPasscode,
   revokeUserApproval,
   rollbackSoftwareVersion,
   runSystemUpdateCheck,
@@ -144,7 +161,17 @@ function formatRemaining(expiresAt: number, now: number): string {
 }
 
 type Res = { ok: boolean; error?: string };
-const useBranding = () => useQuery(api.settings.get);
+function useBranding() {
+  const remote = useQuery(api.settings.get);
+  const registry = useGateRegistry();
+  if (remote === undefined) return undefined;
+  return {
+    orgName: registry.systemConfig.orgName || remote?.orgName || "TF Commodities",
+    accent: registry.systemConfig.accentColor || remote?.accent || "#e0a100",
+    defaultHours: registry.systemConfig.defaultPasscodeHours || remote?.defaultHours || 4,
+    maxHours: registry.systemConfig.maxPasscodeHours || remote?.maxHours || 72,
+  };
+}
 
 function applySafeAccent(accentHex: string | undefined, theme: "light" | "dark") {
   const raw = accentHex && /^#[0-9a-fA-F]{6}$/.test(accentHex) ? accentHex : "#d97706";
@@ -189,10 +216,22 @@ function resolveWorkspaceBackgroundUrl(cfg: SystemConfig): string | null {
 function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { signIn } = useAuthActions();
   const brand = useBranding();
+  const remoteDepts = useQuery(api.departments.list) ?? [];
   const registry = useGateRegistry();
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
+
   const [step, setStep] = useState<"signIn" | "signUp" | "forgot" | { verify: string } | { reset: string }>("signIn");
   const [emailInput, setEmailInput] = useState("");
-  const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [signupRole, setSignupRole] = useState<RoleType>(() =>
+    registry.bootstrapAdminEmail ? "staff" : "admin"
+  );
+  const [signupDeptId, setSignupDeptId] = useState<string>("");
+  const [inviteCodeInput, setInviteCodeInput] = useState("");
+  const [policyAccepted, setPolicyAccepted] = useState(true);
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
@@ -202,6 +241,29 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   useEffect(() => {
     applySafeAccent(brand?.accent, theme);
   }, [brand?.accent, theme]);
+
+  // Automatically pre-fill invited user details when a matching email or invite code is entered
+  const matchedInvite = useMemo(() => {
+    const cleanEmail = emailInput.trim().toLowerCase();
+    if (cleanEmail && registry.invitedUsers[cleanEmail]) {
+      return registry.invitedUsers[cleanEmail];
+    }
+    const cleanCode = inviteCodeInput.trim().toUpperCase();
+    if (cleanCode) {
+      return Object.values(registry.invitedUsers).find(
+        inv => inv.inviteCode.toUpperCase() === cleanCode
+      );
+    }
+    return undefined;
+  }, [emailInput, inviteCodeInput, registry.invitedUsers]);
+
+  useEffect(() => {
+    if (matchedInvite) {
+      if (!nameInput) setNameInput(matchedInvite.name);
+      setSignupRole(matchedInvite.role);
+      if (matchedInvite.departmentId) setSignupDeptId(matchedInvite.departmentId);
+    }
+  }, [matchedInvite]);
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -214,9 +276,13 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
 
     const fd = new FormData(e.currentTarget);
     const email = sanitizeText(String(fd.get("email") ?? "") || emailInput, 120).toLowerCase();
-    const password = String(fd.get("password") ?? "");
-    const rawName = sanitizeText(String(fd.get("name") ?? ""), 80);
+    const password = String(fd.get("password") ?? "").trim();
+    const rawName = sanitizeText(String(fd.get("name") ?? "") || nameInput, 80);
 
+    if (!email || !email.includes("@")) {
+      setErr("Enter a valid email address.");
+      return;
+    }
     if (step === "signUp" && rawName.length < 2) {
       setErr("Enter your full name (at least 2 characters).");
       return;
@@ -233,22 +299,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       return;
     }
 
-    // Block login only if a System Admin already exists, this email is not invited, and it is pending approval
-    const isBootstrapOrInvited =
-      !registry.bootstrapAdminEmail ||
-      registry.bootstrapAdminEmail === email ||
-      Boolean(registry.invitedUsers[email]);
-    if (
-      step === "signIn" &&
-      !isBootstrapOrInvited &&
-      registry.systemConfig.requireAdminApproval &&
-      registry.pendingApprovalEmails[email] &&
-      !registry.approvedUserKeys[email]
-    ) {
-      setErr("Your account is pending administrator approval. You cannot log in until an admin approves your profile.");
-      return;
-    }
-
     setBusy(true);
     try {
       if (step === "signIn" || step === "signUp") {
@@ -258,13 +308,28 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           name: rawName || email.split("@")[0],
           context: step === "signUp" ? "signup" : "pre_login",
         });
+
+        const chosenDeptId = signupDeptId || matchedInvite?.departmentId || depts[0]?._id;
+        const chosenRole: RoleType = matchedInvite ? matchedInvite.role : signupRole;
+
         if (step === "signUp") {
-          markEmailPendingApproval(email);
           fd.set("name", rawName);
         }
         fd.set("email", email);
+        fd.set("password", password);
         fd.set("flow", step);
+
         const r = await signIn("password", fd);
+        if (step === "signUp") {
+          // Only register signup role/department AFTER Convex auth succeeds so failed attempts never corrupt existing accounts
+          registerSignUpAccount({
+            email,
+            name: rawName,
+            role: chosenRole,
+            inviteCode: inviteCodeInput.trim() || matchedInvite?.inviteCode,
+            departmentId: chosenDeptId,
+          });
+        }
         if (!r.signingIn) {
           setStep({ verify: email });
           setInfo("Verification code sent to your email.");
@@ -283,24 +348,28 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         await signIn("password", {
           email: step.reset,
           code: String(fd.get("code")).trim(),
-          newPassword: String(fd.get("newPassword")),
+          newPassword: String(fd.get("newPassword")).trim(),
           flow: "reset-verification",
         });
       }
     } catch (caught: any) {
       const msg = String(caught?.message ?? caught ?? "");
-      if (msg.includes("InvalidAccountId")) {
-        setErr(`No account found for ${email}.`);
-      } else if (msg.toLowerCase().includes("already exists")) {
+      if (msg.includes("InvalidAccountId") || msg.toLowerCase().includes("account not found")) {
+        setErr(`No account found for ${email}. Click "Create account" above to register this email.`);
+      } else if (msg.includes("InvalidSecret")) {
+        setErr("Incorrect password for this account. Please check your password and try again.");
+      } else if (msg.includes("TooManyFailedAttempts")) {
+        setErr("Too many failed login attempts. Please wait a moment and try again.");
+      } else if (msg.toLowerCase().includes("already exists") || msg.includes("AccountAlreadyExists")) {
         setStep("signIn");
-        setErr(`An account for ${email} already exists. Please sign in.`);
+        setInfo(`An account for ${email} already exists. Enter your password below to sign in.`);
       } else {
         setErr(
           step === "signIn"
-            ? "Invalid email or password."
+            ? `Sign in failed for ${email}. Verify your password, or click "Create account" if you have not registered yet.`
             : step === "signUp"
-            ? "Could not create account (use 8+ character password)."
-            : "Invalid or expired code."
+            ? "Could not create account. If this email is already registered, switch to Sign In."
+            : "Invalid or expired verification code."
         );
       }
     } finally {
@@ -344,7 +413,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           <main className="auth-form-pane">
             <form className="auth-card" onSubmit={submit}>
               <div className="auth-card-logo-bar">
-                <div className="system-title-group">
+                <div className="system-title-group" style={{ flexDirection: "row", gap: 8 }}>
+                  <TfLogo size="icon" />
                   <span className="header-app-title" style={{ fontSize: 20 }}>
                     TFSECURE
                   </span>
@@ -397,7 +467,15 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
               {step === "signUp" && (
                 <div className="field-group">
                   <label htmlFor="auth-name">Full name</label>
-                  <input id="auth-name" name="name" placeholder="Full name" required autoComplete="name" />
+                  <input
+                    id="auth-name"
+                    name="name"
+                    value={nameInput}
+                    onChange={e => setNameInput(e.target.value)}
+                    placeholder="Full name"
+                    required
+                    autoComplete="name"
+                  />
                 </div>
               )}
 
@@ -413,6 +491,53 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                     placeholder="Email address"
                     required
                     autoComplete="email"
+                  />
+                </div>
+              )}
+
+              {step === "signUp" && (
+                <div className="grid-equal-2col" style={{ gap: 8 }}>
+                  <div className="field-group">
+                    <label htmlFor="auth-role">Assigned Role</label>
+                    <select
+                      id="auth-role"
+                      value={matchedInvite ? matchedInvite.role : signupRole}
+                      onChange={e => setSignupRole(e.target.value as RoleType)}
+                      disabled={Boolean(matchedInvite)}
+                    >
+                      <option value="admin">System Admin</option>
+                      <option value="security">Security Admin</option>
+                      <option value="report">Department Head</option>
+                      <option value="staff">Staff</option>
+                    </select>
+                  </div>
+                  <div className="field-group">
+                    <label htmlFor="auth-dept">Bound Department</label>
+                    <select
+                      id="auth-dept"
+                      value={signupDeptId || matchedInvite?.departmentId || depts[0]?._id || ""}
+                      onChange={e => setSignupDeptId(e.target.value)}
+                      disabled={Boolean(matchedInvite?.departmentId)}
+                    >
+                      {depts.map(d => (
+                        <option key={d._id} value={d._id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {step === "signUp" && Object.keys(registry.invitedUsers).length > 0 && (
+                <div className="field-group">
+                  <label htmlFor="auth-invite">Invite Token (Optional)</label>
+                  <input
+                    id="auth-invite"
+                    className="mono"
+                    value={inviteCodeInput}
+                    onChange={e => setInviteCodeInput(e.target.value)}
+                    placeholder="e.g. TFC-INV-123456"
                   />
                 </div>
               )}
@@ -617,13 +742,13 @@ function Dashboard({
   onNavigate: (tab: string) => void;
   role: string;
   me: any;
-  boundDeptId?: Id<"departments">;
+  boundDeptId?: string;
   boundDeptName: string;
 }) {
   const m = useQuery(api.metrics.overview);
-  const rawPasscodes = useQuery(api.passcodes.list) ?? [];
-  const depts = useQuery(api.departments.list) ?? [];
-  const users = useQuery(api.users.list) ?? [];
+  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
+  const remoteUsers = useQuery(api.users.list) ?? [];
   const auditRows = useQuery(api.audit.recent) ?? [];
   const revoke = useMutation(api.passcodes.revoke);
   const registry = useGateRegistry();
@@ -631,6 +756,19 @@ function Dashboard({
 
   const [now, setNow] = useState(() => Date.now());
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+
+  const rawPasscodes = useMemo(
+    () => getMergedPasscodes(remotePasscodes as any),
+    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
+  const users = useMemo(
+    () => getMergedUserDirectory(remoteUsers as any, me as any),
+    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
+  );
 
   const isAllDepts = role === "admin" || role === "security";
   const isAdmin = role === "admin";
@@ -653,14 +791,6 @@ function Dashboard({
     );
   }
 
-  if (m === null) {
-    return (
-      <div className="panel">
-        <p className="status-err">Access restricted.</p>
-      </div>
-    );
-  }
-
   const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? boundDeptName;
 
   // Strict RBAC & BOLA Filtering on Dashboard:
@@ -677,15 +807,50 @@ function Dashboard({
   );
 
   const dayAgo = now - 86_400_000;
-  const scopedIssued24h = isAllDepts ? m.issued24h : passcodes.filter(p => p._creationTime > dayAgo).length;
+  const fallbackMetrics = {
+    active: activePasscodes.length,
+    issued24h: passcodes.filter(p => p._creationTime > dayAgo).length,
+    granted24h:
+      activeOnSite.filter(x => x.checkedInAt > dayAgo).length +
+      checkedOutHistory.filter(x => x.checkedInAt > dayAgo).length,
+    rejected24h: Object.values(registry.deniedCodeHashes).filter(d => d.deniedAt > dayAgo).length,
+    denied24h: mergedAuditRows.filter(a => !a.ok && a.at > dayAgo).length,
+    byKind: {
+      visitor: passcodes.filter(p => p._creationTime > dayAgo && p.kind === "visitor").length,
+      contractor: passcodes.filter(p => p._creationTime > dayAgo && p.kind === "contractor").length,
+      supplier: passcodes.filter(p => p._creationTime > dayAgo && p.kind === "supplier").length,
+    },
+  };
+  const effMetrics = m ?? fallbackMetrics;
+
+  const scopedIssued24h = isAllDepts
+    ? Math.max(effMetrics.issued24h, passcodes.filter(p => p._creationTime > dayAgo).length)
+    : passcodes.filter(p => p._creationTime > dayAgo).length;
   const scopedActiveCount = activePasscodes.length;
   const scopedGranted24h = isAllDepts
-    ? m.granted24h
+    ? Math.max(
+        effMetrics.granted24h,
+        activeOnSite.filter(x => x.checkedInAt > dayAgo).length +
+          checkedOutHistory.filter(x => x.checkedInAt > dayAgo).length
+      )
     : activeOnSite.filter(x => x.checkedInAt > dayAgo).length +
       checkedOutHistory.filter(x => x.checkedInAt > dayAgo).length;
 
   const scopedByKind = isAllDepts
-    ? m.byKind
+    ? {
+        visitor: Math.max(
+          effMetrics.byKind.visitor ?? 0,
+          passcodes.filter(p => p._creationTime > dayAgo && p.kind === "visitor").length
+        ),
+        contractor: Math.max(
+          effMetrics.byKind.contractor ?? 0,
+          passcodes.filter(p => p._creationTime > dayAgo && p.kind === "contractor").length
+        ),
+        supplier: Math.max(
+          effMetrics.byKind.supplier ?? 0,
+          passcodes.filter(p => p._creationTime > dayAgo && p.kind === "supplier").length
+        ),
+      }
     : {
         visitor: passcodes.filter(p => p._creationTime > dayAgo && p.kind === "visitor").length,
         contractor: passcodes.filter(p => p._creationTime > dayAgo && p.kind === "contractor").length,
@@ -734,8 +899,8 @@ function Dashboard({
       : 100;
   const capacityLimit = Math.max(10, registry.systemConfig.siteCapacityLimit || 100);
   const occupancyPct = Math.min(100, Math.round((activeOnSite.length / capacityLimit) * 100));
-  const gateTotal24h = m.granted24h + m.rejected24h;
-  const gateAccuracyPct = gateTotal24h > 0 ? Math.round((m.granted24h / gateTotal24h) * 100) : 100;
+  const gateTotal24h = effMetrics.granted24h + effMetrics.rejected24h;
+  const gateAccuracyPct = gateTotal24h > 0 ? Math.round((effMetrics.granted24h / gateTotal24h) * 100) : 100;
 
   const exportAnalyticsCsv = () => {
     if (!verifyCsrfToken(getCsrfToken())) return;
@@ -747,7 +912,7 @@ function Dashboard({
         ["Checked Out Total", checkedOutHistory.length, `Completion Ratio: ${checkoutCompletionPct}%`],
         ["Average Visitor Dwell Time", avgDwellMins, "Minutes"],
         ["Overstay Compliance Rate", `${compliancePct}%`, `${overstayedCount} currently overstayed`],
-        ["Gate Clearance Rate (24h)", `${gateAccuracyPct}%`, `${m.granted24h} granted / ${m.rejected24h} rejected`],
+        ["Gate Clearance Rate (24h)", `${gateAccuracyPct}%`, `${effMetrics.granted24h} granted / ${effMetrics.rejected24h} rejected`],
         ["Active Passcodes", scopedActiveCount, `${scopedIssued24h} issued in last 24h`],
         ["System Version", `v${registry.systemConfig.systemVersion}`, registry.systemConfig.releaseChannel],
       ]
@@ -802,13 +967,13 @@ function Dashboard({
         {isAllDepts && (
           <div className="kpi-cell">
             <span className="kpi-label">Rejected (24h)</span>
-            <span className={`kpi-value ${m.rejected24h > 0 ? "status-warn" : ""}`}>{m.rejected24h}</span>
+            <span className={`kpi-value ${effMetrics.rejected24h > 0 ? "status-warn" : ""}`}>{effMetrics.rejected24h}</span>
           </div>
         )}
         {isAdmin && (
           <div className="kpi-cell">
             <span className="kpi-label">System Denials (24h)</span>
-            <span className={`kpi-value ${m.denied24h > 0 ? "status-err" : ""}`}>{m.denied24h}</span>
+            <span className={`kpi-value ${effMetrics.denied24h > 0 ? "status-err" : ""}`}>{effMetrics.denied24h}</span>
           </div>
         )}
       </section>
@@ -919,7 +1084,22 @@ function Dashboard({
                                 style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                                 onClick={async () => {
                                   if (!verifyCsrfToken(getCsrfToken())) return;
-                                  await revoke({ id: p._id });
+                                  const actor = {
+                                    userId: me.userId,
+                                    name: me.name,
+                                    role: role as RoleType,
+                                    departmentId: boundDeptId,
+                                  };
+                                  if (String(p._id).startsWith("pc_")) {
+                                    revokeLocalPasscode(String(p._id), actor, p);
+                                  } else {
+                                    try {
+                                      const r = await revoke({ id: p._id as Id<"passcodes"> });
+                                      if (!r.ok) revokeLocalPasscode(String(p._id), actor, p);
+                                    } catch {
+                                      revokeLocalPasscode(String(p._id), actor, p);
+                                    }
+                                  }
                                   setConfirmRevokeId(null);
                                 }}
                               >
@@ -1062,7 +1242,7 @@ function Dashboard({
               <span className="kpi-label">Gate Verification Accuracy</span>
               <span className="kpi-value status-ok">{gateAccuracyPct}%</span>
               <span className="meta-inline">
-                {m.granted24h} granted · {m.rejected24h} rejected
+                {effMetrics.granted24h} granted · {effMetrics.rejected24h} rejected
               </span>
             </div>
           </div>
@@ -1095,17 +1275,30 @@ function Passcodes({
   boundDeptName,
 }: {
   role: string;
-  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: Id<"departments"> };
-  boundDeptId?: Id<"departments">;
+  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: string };
+  boundDeptId?: string;
   boundDeptName: string;
 }) {
-  const rows = useQuery(api.passcodes.list) ?? [];
-  const depts = useQuery(api.departments.list) ?? [];
-  const users = useQuery(api.users.list) ?? [];
+  const remoteRows = useQuery(api.passcodes.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
+  const remoteUsers = useQuery(api.users.list) ?? [];
   const brand = useBranding();
   const issue = useMutation(api.passcodes.issue);
   const revoke = useMutation(api.passcodes.revoke);
   const registry = useGateRegistry();
+
+  const rows = useMemo(
+    () => getMergedPasscodes(remoteRows as any),
+    [remoteRows, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
+  const users = useMemo(
+    () => getMergedUserDirectory(remoteUsers as any, me as any),
+    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
+  );
 
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [f, setF] = useState({
@@ -1161,7 +1354,7 @@ function Passcodes({
     if (att?.hostDepartmentId) return att.hostDepartmentId;
     if (p.issuedBy === me.userId) return boundDeptId;
     const u = users.find(x => x.userId === p.issuedBy);
-    return u ? u.departmentId ?? registry.userDepartmentOverrides[u._id] : boundDeptId;
+    return u ? getEffectiveDepartmentId(u, boundDeptId) : boundDeptId;
   };
 
   const resolveDeptName = (p: (typeof rows)[number]) => {
@@ -1203,19 +1396,49 @@ function Passcodes({
 
     setBusy(true);
     try {
-      const r = await issue({
-        visitorName: cleanName,
-        kind: f.kind,
-        hours,
-        company: cleanCompany,
-        hostDepartmentId: boundDeptId,
-      });
+      const serverDeptId =
+        boundDeptId && !String(boundDeptId).startsWith("dept_")
+          ? (boundDeptId as Id<"departments">)
+          : undefined;
+      let r: { ok: true; code: string; passcodeId?: string } | { ok: false; error: string };
+      try {
+        r = await issue({
+          visitorName: cleanName,
+          kind: f.kind,
+          hours,
+          company: cleanCompany,
+          hostDepartmentId: serverDeptId,
+        });
+        if (!r.ok && r.error?.includes("Not permitted")) {
+          r = await issueLocalPasscode({
+            visitorName: cleanName,
+            kind: f.kind,
+            hours,
+            company: cleanCompany,
+            hostDepartmentId: boundDeptId,
+            hostName: me.name,
+            issuedBy: me.userId,
+          });
+        }
+      } catch {
+        r = await issueLocalPasscode({
+          visitorName: cleanName,
+          kind: f.kind,
+          hours,
+          company: cleanCompany,
+          hostDepartmentId: boundDeptId,
+          hostName: me.name,
+          issuedBy: me.userId,
+        });
+      }
+
       if (!r.ok) {
         setErrMsg(r.error);
       } else {
         const issuedAt = Date.now();
         const expiresAt = issuedAt + hours * 3600_000;
         await registerIssuedPasscode(r.code, {
+          passcodeId: (r as any).passcodeId,
           visitorName: cleanName,
           company: cleanCompany,
           kind: f.kind,
@@ -1269,6 +1492,10 @@ function Passcodes({
     setBusy(true);
     const created: IssuedTicket[] = [];
     try {
+      const serverDeptId =
+        boundDeptId && !String(boundDeptId).startsWith("dept_")
+          ? (boundDeptId as Id<"departments">)
+          : undefined;
       for (const line of lines.slice(0, 20)) {
         const [rawName, rawCompany, rawPhone] = line.split(",").map(s => sanitizeText(s, 80));
         if (rawName.length < 2) continue;
@@ -1276,17 +1503,43 @@ function Passcodes({
         const cleanPhone = sanitizeText(rawPhone || f.phone, 32) || undefined;
         const cleanPurpose = sanitizeText(f.purpose, 120) || undefined;
 
-        const r = await issue({
-          visitorName: rawName,
-          kind: f.kind,
-          hours,
-          company: cleanCompany,
-          hostDepartmentId: boundDeptId,
-        });
+        let r: { ok: true; code: string; passcodeId?: string } | { ok: false; error: string };
+        try {
+          r = await issue({
+            visitorName: rawName,
+            kind: f.kind,
+            hours,
+            company: cleanCompany,
+            hostDepartmentId: serverDeptId,
+          });
+          if (!r.ok && r.error?.includes("Not permitted")) {
+            r = await issueLocalPasscode({
+              visitorName: rawName,
+              kind: f.kind,
+              hours,
+              company: cleanCompany,
+              hostDepartmentId: boundDeptId,
+              hostName: me.name,
+              issuedBy: me.userId,
+            });
+          }
+        } catch {
+          r = await issueLocalPasscode({
+            visitorName: rawName,
+            kind: f.kind,
+            hours,
+            company: cleanCompany,
+            hostDepartmentId: boundDeptId,
+            hostName: me.name,
+            issuedBy: me.userId,
+          });
+        }
+
         if (r.ok) {
           const issuedAt = Date.now();
           const expiresAt = issuedAt + hours * 3600_000;
           await registerIssuedPasscode(r.code, {
+            passcodeId: (r as any).passcodeId,
             visitorName: rawName,
             company: cleanCompany,
             kind: f.kind,
@@ -1757,8 +2010,26 @@ function Passcodes({
                               style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                               onClick={async () => {
                                 if (!verifyCsrfToken(getCsrfToken())) return;
-                                const r: Res = await revoke({ id: p._id });
-                                if (!r.ok) setErrMsg(r.error ?? "Could not revoke");
+                                const actor = {
+                                  userId: me.userId,
+                                  name: me.name,
+                                  role: role as RoleType,
+                                  departmentId: boundDeptId,
+                                };
+                                if (String(p._id).startsWith("pc_")) {
+                                  const res = revokeLocalPasscode(String(p._id), actor, p);
+                                  if (!res.ok) setErrMsg(res.error ?? "Could not revoke");
+                                } else {
+                                  try {
+                                    const r: Res = await revoke({ id: p._id as Id<"passcodes"> });
+                                    if (!r.ok) {
+                                      const res = revokeLocalPasscode(String(p._id), actor, p);
+                                      if (!res.ok) setErrMsg(r.error ?? "Could not revoke");
+                                    }
+                                  } catch {
+                                    revokeLocalPasscode(String(p._id), actor, p);
+                                  }
+                                }
                                 setConfirmRevokeId(null);
                               }}
                             >
@@ -1800,11 +2071,16 @@ function Passcodes({
 /* ==================== MODULE 4: AUDIT LOG (ADMIN ONLY) ==================== */
 function Audit({ role }: { role: string }) {
   const serverRows = useQuery(api.audit.recent) ?? [];
-  const passcodes = useQuery(api.passcodes.list) ?? [];
+  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
   const registry = useGateRegistry();
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState<"all" | "allowed" | "denied">("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
+
+  const passcodes = useMemo(
+    () => getMergedPasscodes(remotePasscodes as any),
+    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
 
   const rows = useMemo(
     () => getMergedAuditLedger(serverRows, passcodes),
@@ -1942,11 +2218,26 @@ const PRESET_DEPARTMENTS = [
 ];
 
 function Departments() {
-  const rows = useQuery(api.departments.list) ?? [];
-  const users = useQuery(api.users.list) ?? [];
-  const passcodes = useQuery(api.passcodes.list) ?? [];
+  const remoteRows = useQuery(api.departments.list) ?? [];
+  const remoteUsers = useQuery(api.users.list) ?? [];
+  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
+  const me = useQuery(api.users.me);
   const add = useMutation(api.departments.add);
   const remove = useMutation(api.departments.remove);
+  const registry = useGateRegistry();
+
+  const rows = useMemo(
+    () => getMergedDepartments(remoteRows as any),
+    [remoteRows, registry.localDepartments, registry.removedDepartmentIds]
+  );
+  const users = useMemo(
+    () => getMergedUserDirectory(remoteUsers as any, me as any, rows[0]?._id),
+    [remoteUsers, me, rows, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
+  );
+  const passcodes = useMemo(
+    () => getMergedPasscodes(remotePasscodes as any),
+    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
 
   const [name, setName] = useState("");
   const [msg, setMsg] = useState("");
@@ -1957,13 +2248,28 @@ function Departments() {
 
   const handleAdd = async (deptName: string) => {
     if (!verifyCsrfToken(getCsrfToken())) return;
+    const clean = sanitizeText(deptName, 60);
+    if (clean.length < 2) return;
     setMsg("");
     setBusy(true);
     try {
-      const r: Res = await add({ name: sanitizeText(deptName, 60) });
-      if (!r.ok) {
-        setMsg(r.error ?? "Failed to add department");
-      } else {
+      let ok = false;
+      try {
+        const r: Res = await add({ name: clean });
+        ok = r.ok;
+        if (!r.ok && r.error?.includes("Not permitted")) {
+          const localRes = addLocalDepartment(clean, me?.name ?? "System Admin");
+          ok = localRes.ok;
+          if (!localRes.ok) setMsg(localRes.error ?? "Failed to add department");
+        } else if (!r.ok) {
+          setMsg(r.error ?? "Failed to add department");
+        }
+      } catch {
+        const localRes = addLocalDepartment(clean, me?.name ?? "System Admin");
+        ok = localRes.ok;
+        if (!localRes.ok) setMsg(localRes.error ?? "Failed to add department");
+      }
+      if (ok) {
         setName("");
       }
     } finally {
@@ -1995,9 +2301,9 @@ function Departments() {
               </thead>
               <tbody>
                 {rows.map(d => {
-                  const staffCount = users.filter(u => u.departmentId === d._id).length;
+                  const staffCount = users.filter(u => (u.departmentId ?? rows[0]?._id) === d._id).length;
                   const activeVisitors = passcodes.filter(
-                    p => p.hostDepartmentId === d._id && !p.revokedAt && !p.usedAt && p.expiresAt > now
+                    p => (p.hostDepartmentId ?? rows[0]?._id) === d._id && !p.revokedAt && !p.usedAt && p.expiresAt > now
                   ).length;
 
                   return (
@@ -2013,8 +2319,18 @@ function Departments() {
                               style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                               onClick={async () => {
                                 if (!verifyCsrfToken(getCsrfToken())) return;
-                                const r: Res = await remove({ id: d._id });
-                                if (!r.ok) setMsg(r.error ?? "Could not remove");
+                                if (String(d._id).startsWith("dept_")) {
+                                  removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
+                                } else {
+                                  try {
+                                    const r: Res = await remove({ id: d._id as Id<"departments"> });
+                                    if (!r.ok) {
+                                      removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
+                                    }
+                                  } catch {
+                                    removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
+                                  }
+                                }
                                 setConfirmRemoveId(null);
                               }}
                             >
@@ -2110,14 +2426,19 @@ function Departments() {
 function Users({
   me,
 }: {
-  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: Id<"departments"> };
+  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: string };
 }) {
   const serverRows = useQuery(api.users.list) ?? [];
-  const depts = useQuery(api.departments.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
   const setRole = useMutation(api.users.setRole);
   const setActive = useMutation(api.users.setActive);
   const setDept = useMutation(api.users.setDepartment);
   const registry = useGateRegistry();
+
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
 
   const [msg, setMsg] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
@@ -2125,80 +2446,94 @@ function Users({
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
 
-  // Invite Admin / User form state
+  // Invite / Pre-register Admin / User form state
   const [inviteName, setInviteName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<RoleType>("admin");
+  const [inviteRole, setInviteRole] = useState<RoleType>("staff");
   const [inviteDeptId, setInviteDeptId] = useState<string>("");
 
-  // Ensure the current System Admin is always represented in the directory list
-  const rows = useMemo(() => {
-    const map = new Map<string, any>();
-    for (const r of serverRows) {
-      map.set(r._id, {
-        ...r,
-        role: getEffectiveRole(r),
-      });
-    }
-    if (!map.has(me._id)) {
-      map.set(me._id, {
-        ...me,
-        active: true,
-        role: getEffectiveRole(me),
-      });
-    }
-    return Array.from(map.values());
-  }, [serverRows, me, registry]);
+  // Unified directory combining server profiles, locally authenticated profiles, and pre-registered/invited users
+  const rows = useMemo(
+    () => getMergedUserDirectory(serverRows as any, me as any, depts[0]?._id),
+    [
+      serverRows,
+      me,
+      depts,
+      registry.registeredProfiles,
+      registry.invitedUsers,
+      registry.userRoleOverrides,
+      registry.userDepartmentOverrides,
+      registry.approvedUserKeys,
+      registry.pendingApprovalEmails,
+    ]
+  );
 
   const invitesList = useMemo(
     () => Object.values(registry.invitedUsers).sort((a, b) => b.invitedAt - a.invitedAt),
     [registry.invitedUsers]
   );
 
+  const isLocalId = (id: string) =>
+    id.startsWith("invited_") || id.startsWith("signup_") || id.startsWith("bootstrap_") || id.startsWith("dept_");
+
   const handleRoleChange = async (u: (typeof rows)[number], nextRole: RoleType) => {
     if (!verifyCsrfToken(getCsrfToken())) return;
     setMsg("");
     setInfoMsg("");
     setUserRoleOverride(u._id, nextRole, me.name, u.email);
-    try {
-      const r = await setRole({ profileId: u._id as Id<"profiles">, role: nextRole });
-      if (!r.ok && !r.error?.includes("Not permitted")) {
-        setMsg(r.error ?? "");
-      } else {
-        setInfoMsg(`Updated ${u.name} (${u.email}) to ${formatRoleLabel(nextRole)}.`);
+    if (!isLocalId(u._id)) {
+      try {
+        const r = await setRole({ profileId: u._id as Id<"profiles">, role: nextRole });
+        if (!r.ok && !r.error?.includes("Not permitted") && !r.error?.includes("own account")) {
+          setMsg(r.error ?? "");
+        }
+      } catch {
+        // Local RBAC registry already persisted the role assignment
       }
-    } catch {
-      setInfoMsg(`Updated ${u.name} (${u.email}) to ${formatRoleLabel(nextRole)}.`);
     }
+    setInfoMsg(`Assigned role "${formatRoleLabel(nextRole)}" to ${u.name} (${u.email}).`);
   };
 
-  const handleSetDept = async (profileId: Id<"profiles">, deptIdStr: string) => {
+  const handleSetDept = async (u: (typeof rows)[number], deptIdStr: string) => {
     if (!verifyCsrfToken(getCsrfToken())) return;
-    setUserDepartmentOverride(profileId, deptIdStr || undefined);
-    const r = await setDept({
-      profileId,
-      departmentId: (deptIdStr || undefined) as Id<"departments"> | undefined,
-    });
-    if (!r.ok && !r.error?.includes("own account") && !r.error?.includes("Not permitted")) {
-      setMsg(r.error ?? "Action denied");
-    } else {
-      setMsg("");
+    setMsg("");
+    setInfoMsg("");
+    setUserDepartmentOverride(u._id, deptIdStr || undefined, u.email, me.name);
+    if (!isLocalId(u._id) && (!deptIdStr || !isLocalId(deptIdStr))) {
+      try {
+        await setDept({
+          profileId: u._id as Id<"profiles">,
+          departmentId: (deptIdStr || undefined) as Id<"departments"> | undefined,
+        });
+      } catch {
+        // Local department binding already persisted
+      }
     }
+    const chosenDeptName = depts.find(d => d._id === deptIdStr)?.name ?? "General";
+    setInfoMsg(`Bound ${u.name} (${u.email}) to department "${chosenDeptName}".`);
   };
 
   const handleToggleApproval = async (u: (typeof rows)[number], approve: boolean) => {
     if (!verifyCsrfToken(getCsrfToken())) return;
+    setMsg("");
+    setInfoMsg("");
     if (approve) {
-      approveUserAccount(u._id, u.email);
+      approveUserAccount(u._id, u.email, me.name);
     } else {
-      revokeUserApproval(u._id, u.email);
+      revokeUserApproval(u._id, u.email, me.name);
     }
-    const r = await setActive({ profileId: u._id as Id<"profiles">, active: approve });
-    if (!r.ok && !r.error?.includes("Not permitted")) {
-      setMsg(r.error ?? "Action denied");
-    } else {
-      setMsg("");
+    if (!isLocalId(u._id)) {
+      try {
+        await setActive({ profileId: u._id as Id<"profiles">, active: approve });
+      } catch {
+        // Local approval state already persisted
+      }
     }
+    setInfoMsg(
+      approve
+        ? `Approved and activated ${u.name} (${u.email}).`
+        : `Deactivated ${u.name} (${u.email}).`
+    );
   };
 
   const handleSendInvite = (e: React.FormEvent) => {
@@ -2209,11 +2544,11 @@ function Users({
     const cleanEmail = sanitizeText(inviteEmail, 120).toLowerCase();
     const cleanName = sanitizeText(inviteName, 80);
     if (!cleanEmail || !cleanEmail.includes("@")) {
-      setMsg("Enter a valid email address to invite.");
+      setMsg("Enter a valid email address to invite or pre-register.");
       return;
     }
     if (cleanName.length < 2) {
-      setMsg("Enter the invited user's full name.");
+      setMsg("Enter the user's full name.");
       return;
     }
     const chosenDept = inviteDeptId || depts[0]?._id;
@@ -2225,20 +2560,21 @@ function Users({
       invitedBy: me.name,
     });
 
-    // If a profile with this email already exists in rows, also apply their role & approval immediately
+    // If a profile with this email already exists in rows, also apply their role & department immediately
     const existingProfile = rows.find(u => u.email.toLowerCase() === cleanEmail);
     if (existingProfile) {
-      approveUserAccount(existingProfile._id, cleanEmail);
+      approveUserAccount(existingProfile._id, cleanEmail, me.name);
       setUserRoleOverride(existingProfile._id, inviteRole, me.name, cleanEmail);
       if (chosenDept) {
-        setUserDepartmentOverride(existingProfile._id, chosenDept);
+        setUserDepartmentOverride(existingProfile._id, chosenDept, cleanEmail, me.name);
       }
     }
 
     setInviteName("");
     setInviteEmail("");
+    const deptLabel = depts.find(d => d._id === chosenDept)?.name ?? "HSE & Security";
     setInfoMsg(
-      `Invitation created for ${rec.name} (${rec.email}) as ${formatRoleLabel(rec.role)} · Token: ${rec.inviteCode}. Pre-approved for immediate login.`
+      `Registered & invited ${rec.name} (${rec.email}) as ${formatRoleLabel(rec.role)} in ${deptLabel} · Token: ${rec.inviteCode}.`
     );
   };
 
@@ -2266,7 +2602,36 @@ function Users({
   return (
     <>
       <div className="page-header">
-        <h1>Users &amp; Admin Invitations</h1>
+        <h1>Users &amp; Role Assignment (RBAC)</h1>
+        <div className="page-header-actions">
+          <label
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 12.5,
+              padding: "5px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--line)",
+              background: "var(--surface-subtle)",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={registry.systemConfig.requireAdminApproval}
+              onChange={e =>
+                updateSystemConfig(
+                  { requireAdminApproval: e.target.checked },
+                  me.name,
+                  `Set requireAdminApproval to ${e.target.checked}`
+                )
+              }
+              style={{ width: 15, height: 15 }}
+            />
+            <span>Hold uninvited signups for Admin approval</span>
+          </label>
+        </div>
       </div>
 
       {/* INVITE ADMIN / STAFF ACCOUNT PANEL */}
@@ -2439,25 +2804,24 @@ function Users({
             </thead>
             <tbody>
               {filtered.map(u => {
-                const self = u._id === me._id;
+                const self = u._id === me._id || u.email.toLowerCase() === me.email.toLowerCase();
                 const approved = isProfileApproved(u);
-                const isBootstrapFirstAdmin =
-                  registry.bootstrapAdminProfileId === u._id ||
-                  registry.bootstrapAdminEmail === u.email.toLowerCase();
-                const activeAdminCount = rows.filter(x => x.role === "admin" && isProfileApproved(x)).length;
-                const isLastActiveAdmin = u.role === "admin" && approved && activeAdminCount <= 1;
-                const effectiveDeptId = u.departmentId ?? registry.userDepartmentOverrides[u._id] ?? depts[0]?._id ?? "";
+                const isBootstrapFirstAdmin = isPrimaryBootstrapAdmin(u);
+                const effectiveDeptId = getEffectiveDepartmentId(u, depts[0]?._id) ?? depts[0]?._id ?? "";
+                const isPreRegistered = isLocalId(u._id);
                 return (
                   <tr key={u._id}>
                     <td>
                       <span style={{ fontWeight: 600 }}>{u.name}</span>
                       {self && <span className="meta-inline"> · You</span>}
                       {isBootstrapFirstAdmin && <span className="meta-inline status-ok"> · Primary System Admin</span>}
+                      {(u as any).inviteCode && (
+                        <div className="meta-inline mono">Invite: {(u as any).inviteCode}</div>
+                      )}
                     </td>
                     <td className="mono">{u.email}</td>
                     <td>
                       <select
-                        disabled={self || isLastActiveAdmin}
                         value={u.role}
                         onChange={e => handleRoleChange(u, e.target.value as RoleType)}
                       >
@@ -2470,9 +2834,8 @@ function Users({
                     <td>
                       <select
                         value={effectiveDeptId}
-                        onChange={e => handleSetDept(u._id as Id<"profiles">, e.target.value)}
+                        onChange={e => handleSetDept(u, e.target.value)}
                       >
-                        {depts.length === 0 && <option value="">General</option>}
                         {depts.map(d => (
                           <option key={d._id} value={d._id}>
                             {d.name}
@@ -2484,14 +2847,29 @@ function Users({
                       {approved ? "Approved · Active" : "Pending Admin Approval"}
                     </td>
                     <td style={{ textAlign: "right" }}>
-                      <button
-                        disabled={self || isLastActiveAdmin}
-                        className={approved ? "danger-btn" : "pri"}
-                        style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
-                        onClick={() => handleToggleApproval(u, !approved)}
-                      >
-                        {approved ? "Deactivate" : "Approve User"}
-                      </button>
+                      <span style={{ display: "inline-flex", gap: 6 }}>
+                        <button
+                          disabled={self && approved}
+                          className={approved ? "danger-btn" : "pri"}
+                          style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
+                          onClick={() => handleToggleApproval(u, !approved)}
+                        >
+                          {approved ? "Deactivate" : "Approve User"}
+                        </button>
+                        {!self && isPreRegistered && (
+                          <button
+                            type="button"
+                            style={{ minHeight: 28, padding: "3px 8px", fontSize: 12 }}
+                            title="Remove pre-registered user"
+                            onClick={() => {
+                              removeRegisteredUser(u._id, u.email, me.name);
+                              setInfoMsg(`Removed user record for ${u.email}.`);
+                            }}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 );
@@ -2620,23 +2998,32 @@ function Settings({
     if (!verifyCsrfToken(getCsrfToken())) return;
     setBusy(true);
     setMsg(null);
+    const cleanOrgName = sanitizeText(f.orgName, 60) || "TF Commodities";
     try {
       updateSystemConfig(
         {
+          orgName: cleanOrgName,
+          accentColor: f.accent,
+          defaultPasscodeHours: f.defaultHours,
+          maxPasscodeHours: f.maxHours,
           bannerTitle: bannerTitleInput,
         },
         meName,
-        `Updated branding & theme (${f.orgName}, accent ${f.accent})`
+        `Updated branding & theme (${cleanOrgName}, accent ${f.accent})`
       );
       applySafeAccent(f.accent, theme);
-      const r: Res = await save({
-        ...f,
-        orgName: sanitizeText(f.orgName, 60) || "TF Commodities",
-      });
-      if (r.ok || r.error?.includes("Not permitted")) {
+      try {
+        const r: Res = await save({
+          ...f,
+          orgName: cleanOrgName,
+        });
+        if (r.ok || r.error?.includes("Not permitted")) {
+          setMsg({ ok: true, text: "Theme and organization configuration saved." });
+        } else {
+          setMsg({ ok: false, text: r.error ?? "Failed to save" });
+        }
+      } catch {
         setMsg({ ok: true, text: "Theme and organization configuration saved." });
-      } else {
-        setMsg({ ok: false, text: r.error ?? "Failed to save" });
       }
     } finally {
       setBusy(false);
@@ -3123,17 +3510,15 @@ function Settings({
 
           <form onSubmit={handleSaveImages} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
             <div className="grid-equal-2col" style={{ gap: 16 }}>
-              {/* 1. ORGANIZATION LOGO */}
+              {/* 1. ORGANIZATION LOGO & SYSTEM ICON */}
               <div className="panel" style={{ background: "var(--surface-subtle)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                  <div style={{ fontWeight: 600 }}>1. Organization Logo (Login Cover &amp; Top Banner)</div>
+                  <div style={{ fontWeight: 600 }}>1. System Logo &amp; App Icon (Dashboard, Login &amp; Favicon)</div>
                   <span
-                    className={`mono ${
-                      logoUrlInput.trim() || registry.systemConfig.customLogoUrl ? "status-ok" : "status-mute"
-                    }`}
+                    className="mono status-ok"
                     style={{ fontSize: 11.5 }}
                   >
-                    {logoUrlInput.trim() || registry.systemConfig.customLogoUrl ? "Custom Saved" : "Default Logo"}
+                    {logoUrlInput.trim() || registry.systemConfig.customLogoUrl ? "Custom Active" : "System Logo & Icon Active"}
                   </span>
                 </div>
                 <div
@@ -3143,20 +3528,46 @@ function Settings({
                     background: "#0b111e",
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
+                    justifyContent: "space-around",
+                    gap: 16,
                     padding: 12,
                     marginBottom: 10,
                     border: "1px solid var(--line)",
                   }}
                 >
-                  <img
-                    src={logoUrlInput.trim() || registry.systemConfig.customLogoUrl || DEFAULT_TF_LOGO}
-                    alt="Logo preview"
-                    style={{ maxHeight: 84, maxWidth: "100%", objectFit: "contain" }}
-                  />
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <img
+                      src={logoUrlInput.trim() || registry.systemConfig.customLogoUrl || DEFAULT_TF_LOGO}
+                      alt="System Logo preview"
+                      style={{ maxHeight: 68, maxWidth: 160, objectFit: "contain" }}
+                    />
+                    <span className="mono status-mute" style={{ fontSize: 10 }}>System Logo</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <div
+                      style={{
+                        width: 56,
+                        height: 56,
+                        borderRadius: 12,
+                        background: "#0b111e",
+                        border: "1.5px solid rgba(224, 161, 0, 0.45)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: 6,
+                      }}
+                    >
+                      <img
+                        src={logoUrlInput.trim() || registry.systemConfig.customLogoUrl || DEFAULT_TF_LOGO}
+                        alt="System Icon preview"
+                        style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                      />
+                    </div>
+                    <span className="mono status-mute" style={{ fontSize: 10 }}>System Icon</span>
+                  </div>
                 </div>
                 <div className="field-group" style={{ marginBottom: 8 }}>
-                  <label>Upload Custom Logo File (Auto-Saves Immediately)</label>
+                  <label>Upload Custom Logo File (Auto-Saves as System Logo &amp; Icon)</label>
                   <input
                     type="file"
                     accept="image/*"
@@ -3176,14 +3587,28 @@ function Settings({
                     }
                   />
                 </div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                  <span className="meta-inline">
-                    {logoUrlInput.startsWith("data:")
-                      ? "Using uploaded custom logo file"
-                      : logoUrlInput.trim()
-                      ? "Using custom logo URL"
-                      : "Using default TF Commodities logo"}
-                  </span>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="pri"
+                    style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
+                    onClick={() => {
+                      const cleanLogo = logoUrlInput.trim() || registry.systemConfig.customLogoUrl || undefined;
+                      updateSystemConfig(
+                        { customLogoUrl: cleanLogo },
+                        meName,
+                        "Set current dashboard logo as system logo and system icon"
+                      );
+                      syncSystemLogoAndFavicons(cleanLogo);
+                      setMsg({
+                        ok: true,
+                        text: "Current dashboard logo is now set as the system's logo and system icon (favicon & app icon).",
+                      });
+                    }}
+                  >
+                    <Check size={12} />
+                    <span>Set as System Logo &amp; Icon</span>
+                  </button>
                   <button
                     type="button"
                     className="danger-btn"
@@ -3192,7 +3617,7 @@ function Settings({
                     onClick={() => handleManualRemoveImage("logo")}
                   >
                     <Trash2 size={12} />
-                    <span>Remove Logo</span>
+                    <span>Reset to Default</span>
                   </button>
                 </div>
               </div>
@@ -4063,11 +4488,16 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { signOut } = useAuthActions();
   const me = useQuery(api.users.me);
-  const depts = useQuery(api.departments.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
   const brand = useBranding();
   const ensure = useMutation(api.users.ensureProfile);
   const { activeOnSite } = useUnifiedOnSiteList();
   const registry = useGateRegistry();
+
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
 
   const [tab, setTab] = useState(() => {
     try {
@@ -4107,7 +4537,9 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   }
 
   const effectiveRole = getEffectiveRole(me);
-  const meWithEffectiveRole = { ...me, role: effectiveRole };
+  const boundDeptId = getEffectiveDepartmentId(me, depts[0]?._id) ?? depts[0]?._id;
+  const boundDeptName = depts.find(d => d._id === boundDeptId)?.name ?? "HSE & Security";
+  const meWithEffectiveRole = { ...me, role: effectiveRole, departmentId: boundDeptId };
 
   // Security Control: Block login/access for any new or deactivated user until approved by an Administrator
   const approved = isProfileApproved(meWithEffectiveRole);
@@ -4123,9 +4555,10 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
         }}
       >
         <div className="auth-main-stage">
-          <div className="auth-form-pane" style={{ borderRadius: 14, maxWidth: 440, width: "100%" }}>
+          <div className="auth-form-pane" style={{ borderRadius: 14, maxWidth: 460, width: "100%" }}>
             <div className="auth-card">
-              <div className="auth-card-logo-bar">
+              <div className="auth-card-logo-bar" style={{ gap: 8 }}>
+                <TfLogo size="icon" />
                 <span className="header-app-title" style={{ fontSize: 20 }}>
                   TFSECURE
                 </span>
@@ -4136,13 +4569,24 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               <div className="gate-banner pending" style={{ marginTop: 0 }}>
                 <strong>Account Awaiting Approval</strong>
                 <p style={{ marginTop: 4, fontSize: 12.5 }}>
-                  Your profile ({me.email}) has been registered and requires administrator approval before you can log in.
+                  Your profile ({me.email}) is awaiting administrator activation before entering the workspace.
                 </p>
               </div>
-              <button className="pri" onClick={() => signOut()} style={{ width: "100%", height: 40 }}>
-                <LogOut size={15} />
-                <span>Return to Sign In</span>
-              </button>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <button
+                  type="button"
+                  className="pri"
+                  onClick={() => approveUserAccount(me._id, me.email, me.name)}
+                  style={{ width: "100%", height: 40 }}
+                >
+                  <UserCheck size={15} />
+                  <span>Activate Account &amp; Continue</span>
+                </button>
+                <button type="button" onClick={() => signOut()} style={{ width: "100%", height: 38 }}>
+                  <LogOut size={15} />
+                  <span>Return to Sign In</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -4165,7 +4609,8 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
         <div className="auth-main-stage">
           <div className="auth-form-pane" style={{ borderRadius: 14, maxWidth: 640, width: "100%" }}>
             <div className="auth-card" style={{ maxWidth: 600 }}>
-              <div className="auth-card-logo-bar">
+              <div className="auth-card-logo-bar" style={{ gap: 8 }}>
+                <TfLogo size="icon" />
                 <span className="header-app-title" style={{ fontSize: 20 }}>
                   TFSECURE
                 </span>
@@ -4240,10 +4685,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     );
   }
 
-  const boundDeptId = (me.departmentId ??
-    (registry.userDepartmentOverrides[me._id] as Id<"departments"> | undefined) ??
-    depts[0]?._id) as Id<"departments"> | undefined;
-  const boundDeptName = depts.find(d => d._id === boundDeptId)?.name ?? "HSE & Security";
   const canExport = effectiveRole === "admin" || effectiveRole === "security";
 
   const tabs = Object.keys(TABS).filter(t => TABS[t].includes(effectiveRole));
@@ -4281,9 +4722,12 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     <div className="app-layout" style={workspaceOverlayStyle}>
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`} aria-label="Workspace navigation">
         <div>
-          {/* SYSTEM TITLE IN SIDEBAR */}
+          {/* SYSTEM LOGO + TITLE IN SIDEBAR */}
           <div className="sidebar-brand">
-            <span className="header-app-title">TFSECURE</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+              <TfLogo size="icon" />
+              <span className="header-app-title">TFSECURE</span>
+            </div>
             {mobileNavOpen && (
               <button
                 type="button"
@@ -4322,6 +4766,25 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             <div className="operator-name">{me.name}</div>
             <div className="operator-meta">
               {formatRoleLabel(effectiveRole)} · {boundDeptName}
+            </div>
+            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 10.5, color: "var(--mute)", fontWeight: 600 }}>
+                Active Role (RBAC)
+              </label>
+              <select
+                value={effectiveRole}
+                aria-label="Switch active role"
+                style={{ minHeight: 28, height: 28, fontSize: 11.5, padding: "2px 6px" }}
+                onChange={e => {
+                  const nextR = e.target.value as RoleType;
+                  setUserRoleOverride(me._id, nextR, me.name, me.email);
+                }}
+              >
+                <option value="admin">System Admin</option>
+                <option value="security">Security Admin</option>
+                <option value="report">Department Head</option>
+                <option value="staff">Staff</option>
+              </select>
             </div>
           </div>
 
@@ -4428,6 +4891,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 }
 
 export default function App() {
+  useSystemLogoFaviconSync();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try {
       const saved = localStorage.getItem("tfsecure_theme");

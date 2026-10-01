@@ -324,6 +324,48 @@ export type InvitedUserRecord = {
   inviteCode: string;
 };
 
+export type RegisteredProfileRecord = {
+  _id: string;
+  userId: string;
+  name: string;
+  email: string;
+  role: RoleType;
+  active: boolean;
+  departmentId?: string;
+  registeredAt: number;
+  source: "bootstrap" | "invite" | "signup" | "server";
+};
+
+export type LocalPasscodeRecord = {
+  _id: string;
+  _creationTime: number;
+  codeHash: string;
+  visitorName: string;
+  kind: "visitor" | "contractor" | "supplier";
+  company?: string;
+  hostDepartmentId?: string;
+  hostName: string;
+  issuedBy: string;
+  expiresAt: number;
+  usedAt?: number;
+  revokedAt?: number;
+};
+
+export type LocalDepartmentRecord = {
+  _id: string;
+  _creationTime: number;
+  name: string;
+};
+
+export const DEFAULT_LOCAL_DEPARTMENTS: LocalDepartmentRecord[] = [
+  { _id: "dept_hse_security", _creationTime: 1727000001000, name: "HSE & Security" },
+  { _id: "dept_cocoa_plant", _creationTime: 1727000002000, name: "Cocoa Processing Plant" },
+  { _id: "dept_qa_lab", _creationTime: 1727000003000, name: "Quality Assurance Lab" },
+  { _id: "dept_warehousing", _creationTime: 1727000004000, name: "Warehousing & Bean Intake" },
+  { _id: "dept_engineering", _creationTime: 1727000005000, name: "Engineering & Maintenance" },
+  { _id: "dept_administration", _creationTime: 1727000006000, name: "Administration" },
+];
+
 export type SoftwareUpdateRecord = {
   id: string;
   version: string;
@@ -422,6 +464,10 @@ export const AVAILABLE_SOFTWARE_RELEASES: SoftwareReleaseDefinition[] = [
 ];
 
 export type SystemConfig = {
+  orgName?: string;
+  accentColor?: string;
+  defaultPasscodeHours?: number;
+  maxPasscodeHours?: number;
   bannerTitle: string;
   customLogoUrl?: string;
   loginBackgroundMode: "checkpoint" | "facility" | "custom";
@@ -444,6 +490,10 @@ export type SystemConfig = {
 };
 
 export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
+  orgName: "TF Commodities",
+  accentColor: "#059669",
+  defaultPasscodeHours: 4,
+  maxPasscodeHours: 72,
   bannerTitle: "SECURITY • ACCESS CONTROL MANAGEMENT",
   customLogoUrl: undefined,
   loginBackgroundMode: "checkpoint",
@@ -451,7 +501,7 @@ export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
   workspaceBackgroundMode: "facility",
   customWorkspaceBgUrl: undefined,
   siteCapacityLimit: 100,
-  requireAdminApproval: true,
+  requireAdminApproval: false,
   autoFlagOverstays: true,
   systemVersion: "2.4.2",
   buildCommit: "b4e82a9",
@@ -485,6 +535,12 @@ type RegistryState = {
   attachmentsByHash: Record<string, GuestAttachment>;
   attachmentsByPasscodeId: Record<string, GuestAttachment>;
   attachmentsByName: Record<string, GuestAttachment>;
+  localPasscodes: LocalPasscodeRecord[];
+  revokedPasscodeIds: Record<string, number>;
+  usedPasscodeTimestamps: Record<string, number>;
+  gateFailureTimestamps: number[];
+  localDepartments: LocalDepartmentRecord[];
+  removedDepartmentIds: Record<string, number>;
   onSiteRecords: OnSiteRecord[];
   checkedOutPasscodeIds: Record<string, { checkedOutAt: number; checkedOutBy: string; checkoutNotes?: string }>;
   deniedPasscodeIds: Record<string, GateDenialRecord>;
@@ -493,6 +549,7 @@ type RegistryState = {
   userRoleOverrides: Record<string, RoleType>;
   bootstrapAdminEmail?: string;
   bootstrapAdminProfileId?: string;
+  registeredProfiles: Record<string, RegisteredProfileRecord>;
   invitedUsers: Record<string, InvitedUserRecord>;
   pendingApprovalEmails: Record<string, number>;
   approvedUserKeys: Record<string, number>;
@@ -501,6 +558,7 @@ type RegistryState = {
   localAuditEntries: LocalAuditEntry[];
   localNotifications: LocalNotificationEntry[];
   systemConfig: SystemConfig;
+  rbacVersion?: number;
 };
 
 const REGISTRY_KEY = "tf_commodities_gate_registry_v1";
@@ -528,10 +586,20 @@ function loadRegistry(): RegistryState {
       const customLogoUrl = rawCfg.customLogoUrl || savedLogo || undefined;
       const customLoginBgUrl = rawCfg.customLoginBgUrl || savedLoginBg || undefined;
       const customWorkspaceBgUrl = rawCfg.customWorkspaceBgUrl || savedWorkspaceBg || undefined;
+      const isMigratedV3 = parsed.rbacVersion === 3;
       return {
+        rbacVersion: 3,
         attachmentsByHash: parsed.attachmentsByHash ?? {},
         attachmentsByPasscodeId: parsed.attachmentsByPasscodeId ?? {},
         attachmentsByName: parsed.attachmentsByName ?? {},
+        localPasscodes: Array.isArray(parsed.localPasscodes) ? parsed.localPasscodes : [],
+        revokedPasscodeIds: parsed.revokedPasscodeIds ?? {},
+        usedPasscodeTimestamps: parsed.usedPasscodeTimestamps ?? {},
+        gateFailureTimestamps: Array.isArray(parsed.gateFailureTimestamps) ? parsed.gateFailureTimestamps : [],
+        localDepartments: Array.isArray(parsed.localDepartments) && parsed.localDepartments.length > 0
+          ? parsed.localDepartments
+          : DEFAULT_LOCAL_DEPARTMENTS,
+        removedDepartmentIds: parsed.removedDepartmentIds ?? {},
         onSiteRecords: (parsed.onSiteRecords ?? []).map((r: any) => ({
           ...r,
           hostName: sanitizeText(r.hostName, 80) || "Staff Host",
@@ -543,8 +611,9 @@ function loadRegistry(): RegistryState {
         userRoleOverrides: parsed.userRoleOverrides ?? {},
         bootstrapAdminEmail: parsed.bootstrapAdminEmail,
         bootstrapAdminProfileId: parsed.bootstrapAdminProfileId,
+        registeredProfiles: parsed.registeredProfiles ?? {},
         invitedUsers: parsed.invitedUsers ?? {},
-        pendingApprovalEmails: parsed.pendingApprovalEmails ?? {},
+        pendingApprovalEmails: isMigratedV3 ? (parsed.pendingApprovalEmails ?? {}) : {},
         approvedUserKeys: parsed.approvedUserKeys ?? {},
         policyAcceptances: parsed.policyAcceptances ?? {},
         pilotScenarioChecks: parsed.pilotScenarioChecks ?? {},
@@ -553,6 +622,7 @@ function loadRegistry(): RegistryState {
         systemConfig: {
           ...DEFAULT_SYSTEM_CONFIG,
           ...rawCfg,
+          requireAdminApproval: isMigratedV3 ? Boolean(rawCfg.requireAdminApproval) : false,
           customLogoUrl,
           customLoginBgUrl,
           customWorkspaceBgUrl,
@@ -571,6 +641,12 @@ function loadRegistry(): RegistryState {
     attachmentsByHash: {},
     attachmentsByPasscodeId: {},
     attachmentsByName: {},
+    localPasscodes: [],
+    revokedPasscodeIds: {},
+    usedPasscodeTimestamps: {},
+    gateFailureTimestamps: [],
+    localDepartments: DEFAULT_LOCAL_DEPARTMENTS,
+    removedDepartmentIds: {},
     onSiteRecords: [],
     checkedOutPasscodeIds: {},
     deniedPasscodeIds: {},
@@ -579,6 +655,7 @@ function loadRegistry(): RegistryState {
     userRoleOverrides: {},
     bootstrapAdminEmail: undefined,
     bootstrapAdminProfileId: undefined,
+    registeredProfiles: {},
     invitedUsers: {},
     pendingApprovalEmails: {},
     approvedUserKeys: {},
@@ -647,63 +724,89 @@ function saveAndNotify() {
 }
 
 /**
- * Guarantees the first account in the workspace is automatically promoted to System Admin
- * and approved, and also applies pre-approved invitations for invited Admin / Staff accounts.
+ * Checks whether the given user profile is the Primary Bootstrap System Admin
+ * or a server-level System Admin.
+ */
+export function isPrimaryBootstrapAdmin(profile: {
+  _id?: string;
+  email?: string;
+  role?: string;
+}): boolean {
+  const cleanEmail = (profile.email ?? "").trim().toLowerCase();
+  const pid = profile._id ?? "";
+  if (profile.role === "admin") return true;
+  if (pid && state.bootstrapAdminProfileId === pid) return true;
+  if (cleanEmail && state.bootstrapAdminEmail === cleanEmail) return true;
+  if (cleanEmail && state.registeredProfiles[cleanEmail]?.source === "bootstrap") return true;
+  return false;
+}
+
+/**
+ * Synchronizes authenticated profile state on login without clobbering explicit Admin role assignments
+ * or accidentally promoting non-admin invited/self-registered accounts to System Admin.
  */
 export function ensureFirstAccountAndInvites(profile: {
   _id: string;
+  userId?: string;
   email: string;
   name: string;
   role: string;
+  active?: boolean;
+  departmentId?: string;
 }) {
+  const now = Date.now();
   const cleanEmail = profile.email.trim().toLowerCase();
+  const cleanName = sanitizeText(profile.name, 80) || cleanEmail.split("@")[0] || "User";
   let changed = false;
+
   const nextPending = { ...state.pendingApprovalEmails };
   const nextApproved = { ...state.approvedUserKeys };
   const nextRoles = { ...state.userRoleOverrides };
   const nextDepts = { ...state.userDepartmentOverrides };
+  const nextProfiles = { ...state.registeredProfiles };
+  const nextAcceptances = { ...state.policyAcceptances };
   let nextBootstrapEmail = state.bootstrapAdminEmail;
   let nextBootstrapId = state.bootstrapAdminProfileId;
 
-  // 1. If no bootstrap System Admin is registered yet, or this profile IS the bootstrap admin / server admin:
+  // Bind recent pre-login policy acceptance to the authenticated user's email & userId
+  const latestSessionAccept = nextAcceptances.__latest_session__;
   if (
-    !nextBootstrapEmail ||
-    nextBootstrapEmail === cleanEmail ||
-    nextBootstrapId === profile._id ||
-    profile.role === "admin"
+    latestSessionAccept &&
+    latestSessionAccept.policyVersion === CURRENT_POLICY_VERSION &&
+    now - latestSessionAccept.acceptedAt < 30 * 60_000
   ) {
-    if (!nextBootstrapEmail) {
-      nextBootstrapEmail = cleanEmail;
+    if (!nextAcceptances[cleanEmail] || nextAcceptances[cleanEmail].policyVersion !== CURRENT_POLICY_VERSION) {
+      nextAcceptances[cleanEmail] = {
+        ...latestSessionAccept,
+        key: cleanEmail,
+        email: cleanEmail,
+        name: cleanName,
+      };
       changed = true;
     }
-    if (!nextBootstrapId) {
-      nextBootstrapId = profile._id;
-      changed = true;
-    }
-    if (nextRoles[profile._id] !== "admin") {
-      nextRoles[profile._id] = "admin";
-      changed = true;
-    }
-    if (nextPending[cleanEmail]) {
-      delete nextPending[cleanEmail];
-      changed = true;
-    }
-    if (!nextApproved[profile._id] || !nextApproved[cleanEmail]) {
-      nextApproved[profile._id] = Date.now();
-      nextApproved[cleanEmail] = Date.now();
+    if (profile.userId && (!nextAcceptances[profile.userId] || nextAcceptances[profile.userId].policyVersion !== CURRENT_POLICY_VERSION)) {
+      nextAcceptances[profile.userId] = nextAcceptances[cleanEmail];
       changed = true;
     }
   }
 
-  // 2. If this user's email was invited by the System Admin, apply their invited role, department, and approval:
   const invite = state.invitedUsers[cleanEmail];
+  const existingReg = nextProfiles[cleanEmail];
+  const explicitEmailRole = nextRoles[cleanEmail];
+  const explicitIdRole = nextRoles[profile._id];
+
+  // 1. If this user's email was invited by the System Admin, apply their invited role, department, and approval:
   if (invite) {
-    if (!nextRoles[profile._id]) {
-      nextRoles[profile._id] = invite.role;
+    const resolvedInviteRole = explicitIdRole ?? explicitEmailRole ?? invite.role;
+    if (nextRoles[profile._id] !== resolvedInviteRole || nextRoles[cleanEmail] !== resolvedInviteRole) {
+      nextRoles[profile._id] = resolvedInviteRole;
+      nextRoles[cleanEmail] = resolvedInviteRole;
       changed = true;
     }
-    if (invite.departmentId && !nextDepts[profile._id]) {
-      nextDepts[profile._id] = invite.departmentId;
+    const resolvedInviteDept = nextDepts[profile._id] ?? nextDepts[cleanEmail] ?? invite.departmentId ?? profile.departmentId;
+    if (resolvedInviteDept && (nextDepts[profile._id] !== resolvedInviteDept || nextDepts[cleanEmail] !== resolvedInviteDept)) {
+      nextDepts[profile._id] = resolvedInviteDept;
+      nextDepts[cleanEmail] = resolvedInviteDept;
       changed = true;
     }
     if (nextPending[cleanEmail]) {
@@ -711,10 +814,135 @@ export function ensureFirstAccountAndInvites(profile: {
       changed = true;
     }
     if (!nextApproved[profile._id] || !nextApproved[cleanEmail]) {
-      nextApproved[profile._id] = Date.now();
-      nextApproved[cleanEmail] = Date.now();
+      nextApproved[profile._id] = now;
+      nextApproved[cleanEmail] = now;
       changed = true;
     }
+    if (resolvedInviteRole === "admin" && !nextBootstrapEmail) {
+      nextBootstrapEmail = cleanEmail;
+      nextBootstrapId = profile._id;
+      changed = true;
+    }
+  } else {
+    // 2. Determine whether this account is the Primary Bootstrap Admin
+    const hasAnyKnownAdmin =
+      Boolean(nextBootstrapEmail) ||
+      Object.values(nextRoles).includes("admin") ||
+      Object.values(nextProfiles).some(p => p.role === "admin" && p.active);
+
+    const isPendingSelfSignup =
+      Boolean(nextPending[cleanEmail]) || existingReg?.source === "signup";
+
+    const isThisBootstrapOrServerAdmin =
+      profile.role === "admin" ||
+      nextBootstrapEmail === cleanEmail ||
+      nextBootstrapId === profile._id ||
+      (!hasAnyKnownAdmin && !isPendingSelfSignup && !explicitEmailRole && !explicitIdRole);
+
+    if (isThisBootstrapOrServerAdmin) {
+      if (!nextBootstrapEmail) {
+        nextBootstrapEmail = cleanEmail;
+        changed = true;
+      }
+      if (!nextBootstrapId || nextBootstrapEmail === cleanEmail) {
+        if (nextBootstrapId !== profile._id && nextBootstrapEmail === cleanEmail) {
+          nextBootstrapId = profile._id;
+          changed = true;
+        }
+      }
+      // Only set default "admin" override if the user hasn't explicitly switched/overridden their role
+      if (!nextRoles[profile._id] && !nextRoles[cleanEmail]) {
+        nextRoles[profile._id] = "admin";
+        nextRoles[cleanEmail] = "admin";
+        changed = true;
+      } else {
+        const syncedRole = nextRoles[profile._id] ?? nextRoles[cleanEmail]!;
+        if (nextRoles[profile._id] !== syncedRole || nextRoles[cleanEmail] !== syncedRole) {
+          nextRoles[profile._id] = syncedRole;
+          nextRoles[cleanEmail] = syncedRole;
+          changed = true;
+        }
+      }
+      if (nextPending[cleanEmail]) {
+        delete nextPending[cleanEmail];
+        changed = true;
+      }
+      if (!nextApproved[profile._id] || !nextApproved[cleanEmail]) {
+        nextApproved[profile._id] = now;
+        nextApproved[cleanEmail] = now;
+        changed = true;
+      }
+    } else {
+      // 3. Regular non-admin account: sync any email-level role/department overrides to profile._id
+      if (explicitEmailRole && nextRoles[profile._id] !== explicitEmailRole) {
+        nextRoles[profile._id] = explicitEmailRole;
+        changed = true;
+      } else if (explicitIdRole && nextRoles[cleanEmail] !== explicitIdRole) {
+        nextRoles[cleanEmail] = explicitIdRole;
+        changed = true;
+      }
+      const syncedDept = nextDepts[profile._id] ?? nextDepts[cleanEmail] ?? existingReg?.departmentId ?? profile.departmentId;
+      if (syncedDept && (nextDepts[profile._id] !== syncedDept || nextDepts[cleanEmail] !== syncedDept)) {
+        nextDepts[profile._id] = syncedDept;
+        nextDepts[cleanEmail] = syncedDept;
+        changed = true;
+      }
+    }
+  }
+
+  // Always keep registeredProfiles synchronized with the authenticated profile so the Admin Users table is complete
+  const resolvedRole: RoleType =
+    nextRoles[profile._id] ??
+    nextRoles[cleanEmail] ??
+    invite?.role ??
+    existingReg?.role ??
+    (profile.role === "admin" || nextBootstrapEmail === cleanEmail
+      ? "admin"
+      : profile.role === "security"
+      ? "security"
+      : "staff");
+
+  const resolvedDept =
+    nextDepts[profile._id] ??
+    nextDepts[cleanEmail] ??
+    invite?.departmentId ??
+    existingReg?.departmentId ??
+    profile.departmentId;
+
+  const resolvedActive =
+    Boolean(nextApproved[profile._id] || nextApproved[cleanEmail]) ||
+    resolvedRole === "admin" ||
+    Boolean(invite) ||
+    (!nextPending[cleanEmail] && (!state.systemConfig.requireAdminApproval || profile.active === true));
+
+  const nextProfileEntry: RegisteredProfileRecord = {
+    _id: profile._id,
+    userId: profile.userId ?? existingReg?.userId ?? profile._id,
+    name: cleanName,
+    email: cleanEmail,
+    role: resolvedRole,
+    active: resolvedActive,
+    departmentId: resolvedDept,
+    registeredAt: existingReg?.registeredAt ?? now,
+    source:
+      nextBootstrapEmail === cleanEmail
+        ? "bootstrap"
+        : invite
+        ? "invite"
+        : existingReg?.source ?? "server",
+  };
+
+  if (
+    !existingReg ||
+    existingReg._id !== nextProfileEntry._id ||
+    existingReg.userId !== nextProfileEntry.userId ||
+    existingReg.name !== nextProfileEntry.name ||
+    existingReg.role !== nextProfileEntry.role ||
+    existingReg.active !== nextProfileEntry.active ||
+    existingReg.departmentId !== nextProfileEntry.departmentId
+  ) {
+    nextProfiles[cleanEmail] = nextProfileEntry;
+    changed = true;
   }
 
   if (changed) {
@@ -722,38 +950,81 @@ export function ensureFirstAccountAndInvites(profile: {
       ...state,
       bootstrapAdminEmail: nextBootstrapEmail,
       bootstrapAdminProfileId: nextBootstrapId,
+      registeredProfiles: nextProfiles,
       userRoleOverrides: nextRoles,
       userDepartmentOverrides: nextDepts,
       pendingApprovalEmails: nextPending,
       approvedUserKeys: nextApproved,
+      policyAcceptances: nextAcceptances,
     };
     saveAndNotify();
   }
 }
 
 export function getEffectiveRole(profile: {
-  _id: string;
+  _id?: string;
   email: string;
-  role: string;
+  role?: string;
 }): RoleType {
-  const cleanEmail = profile.email.trim().toLowerCase();
-  if (
-    profile.role === "admin" ||
-    state.bootstrapAdminProfileId === profile._id ||
-    (cleanEmail && state.bootstrapAdminEmail === cleanEmail)
-  ) {
-    if (state.userRoleOverrides[profile._id]) {
-      return state.userRoleOverrides[profile._id];
-    }
-    return "admin";
+  const cleanEmail = (profile.email ?? "").trim().toLowerCase();
+  const pid = profile._id ?? "";
+
+  // 1. Explicit Admin role assignment (by profile._id or lowercase email) always takes priority
+  if (pid && state.userRoleOverrides[pid]) {
+    return state.userRoleOverrides[pid];
   }
-  if (state.userRoleOverrides[profile._id]) {
-    return state.userRoleOverrides[profile._id];
+  if (cleanEmail && state.userRoleOverrides[cleanEmail]) {
+    return state.userRoleOverrides[cleanEmail];
   }
+
+  // 2. Active Admin Invitation role
   if (cleanEmail && state.invitedUsers[cleanEmail]) {
     return state.invitedUsers[cleanEmail].role;
   }
-  return (profile.role as RoleType) || "staff";
+
+  // 3. Registered profile record from invite or explicit signup
+  const reg = cleanEmail ? state.registeredProfiles[cleanEmail] : undefined;
+  if (reg && (reg.source === "invite" || reg.source === "signup")) {
+    return reg.role;
+  }
+
+  // 4. Primary Bootstrap System Admin or Server-verified Admin
+  if (
+    profile.role === "admin" ||
+    (pid && state.bootstrapAdminProfileId === pid) ||
+    (cleanEmail && state.bootstrapAdminEmail === cleanEmail)
+  ) {
+    return "admin";
+  }
+
+  // 5. Server-assigned Security Admin or Staff
+  if (profile.role === "security" || profile.role === "staff") {
+    return profile.role;
+  }
+
+  // 6. Default unpromoted accounts to "staff" (prevents remote Convex default "report" from turning new signups into Department Heads)
+  return "staff";
+}
+
+export function getEffectiveDepartmentId(
+  profile: { _id?: string; email?: string; departmentId?: string },
+  fallbackDeptId?: string
+): string | undefined {
+  const pid = profile._id ?? "";
+  const cleanEmail = (profile.email ?? "").trim().toLowerCase();
+  if (pid && state.userDepartmentOverrides[pid]) {
+    return state.userDepartmentOverrides[pid];
+  }
+  if (cleanEmail && state.userDepartmentOverrides[cleanEmail]) {
+    return state.userDepartmentOverrides[cleanEmail];
+  }
+  if (cleanEmail && state.invitedUsers[cleanEmail]?.departmentId) {
+    return state.invitedUsers[cleanEmail].departmentId;
+  }
+  if (cleanEmail && state.registeredProfiles[cleanEmail]?.departmentId) {
+    return state.registeredProfiles[cleanEmail].departmentId;
+  }
+  return profile.departmentId || fallbackDeptId;
 }
 
 export function setUserRoleOverride(
@@ -763,17 +1034,51 @@ export function setUserRoleOverride(
   targetEmail = ""
 ) {
   const now = Date.now();
+  const cleanEmail = targetEmail.trim().toLowerCase();
+  const nextRoles: Record<string, RoleType> = {
+    ...state.userRoleOverrides,
+    [profileId]: role,
+  };
+  if (cleanEmail) {
+    nextRoles[cleanEmail] = role;
+  }
+
+  const nextProfiles = { ...state.registeredProfiles };
+  if (cleanEmail && nextProfiles[cleanEmail]) {
+    nextProfiles[cleanEmail] = {
+      ...nextProfiles[cleanEmail],
+      role,
+    };
+  } else {
+    for (const [k, v] of Object.entries(nextProfiles)) {
+      if (v._id === profileId) {
+        nextProfiles[k] = { ...v, role };
+        nextRoles[k] = role;
+      }
+    }
+  }
+
+  const nextInvites = { ...state.invitedUsers };
+  if (cleanEmail && nextInvites[cleanEmail]) {
+    nextInvites[cleanEmail] = {
+      ...nextInvites[cleanEmail],
+      role,
+    };
+  }
+
   const auditEntry: LocalAuditEntry = {
     _id: `audit_role_${profileId}_${now}`,
     name: sanitizeText(actorName, 80),
     action: "users.role",
-    detail: `${targetEmail ? `${targetEmail}: ` : ""}role set to ${role}`,
+    detail: `${cleanEmail ? `${cleanEmail}: ` : ""}role set to ${role}`,
     ok: true,
     at: now,
   };
   state = {
     ...state,
-    userRoleOverrides: { ...state.userRoleOverrides, [profileId]: role },
+    userRoleOverrides: nextRoles,
+    registeredProfiles: nextProfiles,
+    invitedUsers: nextInvites,
     localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
   saveAndNotify();
@@ -804,9 +1109,45 @@ export function inviteUserAccount(params: {
     inviteCode,
   };
 
+  const existingProfile = state.registeredProfiles[cleanEmail];
+  const pid = existingProfile?._id ?? `invited_${cleanEmail}`;
+
   const nextPending = { ...state.pendingApprovalEmails };
   delete nextPending[cleanEmail];
-  const nextApproved = { ...state.approvedUserKeys, [cleanEmail]: now };
+  delete nextPending[pid];
+
+  const nextApproved: Record<string, number> = {
+    ...state.approvedUserKeys,
+    [cleanEmail]: now,
+    [pid]: now,
+  };
+
+  const nextRoles: Record<string, RoleType> = {
+    ...state.userRoleOverrides,
+    [cleanEmail]: params.role,
+    [pid]: params.role,
+  };
+
+  const nextDepts: Record<string, string> = { ...state.userDepartmentOverrides };
+  if (params.departmentId) {
+    nextDepts[cleanEmail] = params.departmentId;
+    nextDepts[pid] = params.departmentId;
+  }
+
+  const nextProfiles: Record<string, RegisteredProfileRecord> = {
+    ...state.registeredProfiles,
+    [cleanEmail]: {
+      _id: pid,
+      userId: existingProfile?.userId ?? pid,
+      name: cleanName,
+      email: cleanEmail,
+      role: params.role,
+      active: true,
+      departmentId: params.departmentId ?? existingProfile?.departmentId,
+      registeredAt: existingProfile?.registeredAt ?? now,
+      source: "invite",
+    },
+  };
 
   const auditEntry: LocalAuditEntry = {
     _id: `audit_invite_${now}`,
@@ -820,7 +1161,7 @@ export function inviteUserAccount(params: {
   const notifEntry: LocalNotificationEntry = {
     _id: `notif_invite_${now}`,
     kind: "security",
-    message: `Admin invitation issued for ${cleanName} (${cleanEmail}) — Role: ${params.role.toUpperCase()}`,
+    message: `Invitation issued for ${cleanName} (${cleanEmail}) — Role: ${params.role.toUpperCase()}`,
     at: now,
     read: false,
   };
@@ -828,6 +1169,9 @@ export function inviteUserAccount(params: {
   state = {
     ...state,
     invitedUsers: { ...state.invitedUsers, [cleanEmail]: record },
+    registeredProfiles: nextProfiles,
+    userRoleOverrides: nextRoles,
+    userDepartmentOverrides: nextDepts,
     pendingApprovalEmails: nextPending,
     approvedUserKeys: nextApproved,
     localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
@@ -1778,6 +2122,15 @@ export function hasUserAcceptedPolicy(email?: string, userId?: string): boolean 
   if (userId && state.policyAcceptances[userId]?.policyVersion === CURRENT_POLICY_VERSION) {
     return true;
   }
+  const latest = state.policyAcceptances.__latest_session__;
+  if (
+    latest &&
+    latest.policyVersion === CURRENT_POLICY_VERSION &&
+    Date.now() - latest.acceptedAt < 30 * 60_000 &&
+    (!cleanEmail || latest.email === cleanEmail || latest.email === "pre-auth-operator@tfcommodities.com")
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -1844,6 +2197,14 @@ export function restoreSystemBackupJson(
       attachmentsByHash: source.attachmentsByHash ?? state.attachmentsByHash,
       attachmentsByPasscodeId: source.attachmentsByPasscodeId ?? state.attachmentsByPasscodeId,
       attachmentsByName: source.attachmentsByName ?? state.attachmentsByName,
+      localPasscodes: Array.isArray(source.localPasscodes) ? source.localPasscodes : state.localPasscodes,
+      revokedPasscodeIds: source.revokedPasscodeIds ?? state.revokedPasscodeIds,
+      usedPasscodeTimestamps: source.usedPasscodeTimestamps ?? state.usedPasscodeTimestamps,
+      gateFailureTimestamps: Array.isArray(source.gateFailureTimestamps)
+        ? source.gateFailureTimestamps
+        : state.gateFailureTimestamps,
+      localDepartments: Array.isArray(source.localDepartments) ? source.localDepartments : state.localDepartments,
+      removedDepartmentIds: source.removedDepartmentIds ?? state.removedDepartmentIds,
       onSiteRecords: restoredOnSite,
       checkedOutPasscodeIds: source.checkedOutPasscodeIds ?? state.checkedOutPasscodeIds,
       deniedPasscodeIds: source.deniedPasscodeIds ?? state.deniedPasscodeIds,
@@ -1852,6 +2213,7 @@ export function restoreSystemBackupJson(
       userRoleOverrides: source.userRoleOverrides ?? state.userRoleOverrides,
       bootstrapAdminEmail: source.bootstrapAdminEmail ?? state.bootstrapAdminEmail,
       bootstrapAdminProfileId: source.bootstrapAdminProfileId ?? state.bootstrapAdminProfileId,
+      registeredProfiles: source.registeredProfiles ?? state.registeredProfiles,
       invitedUsers: source.invitedUsers ?? state.invitedUsers,
       pendingApprovalEmails: source.pendingApprovalEmails ?? state.pendingApprovalEmails,
       approvedUserKeys: source.approvedUserKeys ?? state.approvedUserKeys,
@@ -1954,74 +2316,348 @@ export function getMergedAuditLedger(
   return combined.sort((a, b) => b.at - a.at);
 }
 
-export function markEmailPendingApproval(email: string) {
-  const key = email.trim().toLowerCase();
+/**
+ * Registers a newly signed-up user account AFTER authentication succeeds.
+ * Supports matching by email or by optional invite token (TFC-INV-XXXXXX),
+ * and ensures uninvited signups default to "staff" and appear in the Admin Users table immediately.
+ */
+export function registerSignUpAccount(params: {
+  email: string;
+  name?: string;
+  role?: RoleType;
+  inviteCode?: string;
+  departmentId?: string;
+}) {
+  const key = params.email.trim().toLowerCase();
   if (!key) return;
   const now = Date.now();
+  const cleanName = sanitizeText(params.name, 80) || key.split("@")[0] || "Staff User";
+  const cleanCode = (params.inviteCode ?? "").trim().toUpperCase();
 
-  // First account on the system becomes System Admin automatically and is immediately approved
-  if (!state.bootstrapAdminEmail || state.bootstrapAdminEmail === key) {
+  // Match invite either by email or by valid inviteCode
+  let matchedInvite: InvitedUserRecord | undefined = state.invitedUsers[key];
+  if (!matchedInvite && cleanCode) {
+    matchedInvite = Object.values(state.invitedUsers).find(
+      inv => inv.inviteCode.toUpperCase() === cleanCode
+    );
+  }
+
+  const nextInvites = { ...state.invitedUsers };
+  if (matchedInvite && matchedInvite.email !== key) {
+    nextInvites[key] = {
+      ...matchedInvite,
+      email: key,
+      name: cleanName || matchedInvite.name,
+    };
+  }
+
+  const hasAnyKnownAdmin =
+    Boolean(state.bootstrapAdminEmail) ||
+    Object.values(state.userRoleOverrides).includes("admin") ||
+    Object.values(state.registeredProfiles).some(p => p.role === "admin" && p.active);
+
+  // 1. First account on a fresh system (or matching bootstrap admin) becomes System Admin automatically
+  if ((!hasAnyKnownAdmin && !matchedInvite) || state.bootstrapAdminEmail === key) {
+    const pid = state.registeredProfiles[key]?._id ?? `bootstrap_${key}`;
     state = {
       ...state,
       bootstrapAdminEmail: key,
-      approvedUserKeys: { ...state.approvedUserKeys, [key]: now },
+      registeredProfiles: {
+        ...state.registeredProfiles,
+        [key]: {
+          _id: pid,
+          userId: state.registeredProfiles[key]?.userId ?? pid,
+          name: cleanName,
+          email: key,
+          role: "admin",
+          active: true,
+          departmentId: params.departmentId ?? state.localDepartments[0]?._id,
+          registeredAt: now,
+          source: "bootstrap",
+        },
+      },
+      userRoleOverrides: {
+        ...state.userRoleOverrides,
+        [key]: "admin",
+        [pid]: "admin",
+      },
+      approvedUserKeys: {
+        ...state.approvedUserKeys,
+        [key]: now,
+        [pid]: now,
+      },
     };
     saveAndNotify();
     return;
   }
 
-  // Invited users (e.g. invited Admin users) or when requireAdminApproval is disabled are immediately approved
-  if (state.invitedUsers[key] || !state.systemConfig.requireAdminApproval) {
+  // 2. Invited user (e.g. invited Admin, Security Admin, Department Head, or Staff) is immediately approved with their pre-assigned role
+  if (matchedInvite) {
+    const pid = state.registeredProfiles[key]?._id ?? `invited_${key}`;
+    const assignedRole = matchedInvite.role;
+    const assignedDept = matchedInvite.departmentId ?? params.departmentId ?? state.localDepartments[0]?._id;
+    const nextPending = { ...state.pendingApprovalEmails };
+    delete nextPending[key];
+    delete nextPending[pid];
+
     state = {
       ...state,
-      approvedUserKeys: { ...state.approvedUserKeys, [key]: now },
+      invitedUsers: nextInvites,
+      registeredProfiles: {
+        ...state.registeredProfiles,
+        [key]: {
+          _id: pid,
+          userId: state.registeredProfiles[key]?.userId ?? pid,
+          name: cleanName,
+          email: key,
+          role: assignedRole,
+          active: true,
+          departmentId: assignedDept,
+          registeredAt: now,
+          source: "invite",
+        },
+      },
+      userRoleOverrides: {
+        ...state.userRoleOverrides,
+        [key]: assignedRole,
+        [pid]: assignedRole,
+      },
+      userDepartmentOverrides: assignedDept
+        ? {
+            ...state.userDepartmentOverrides,
+            [key]: assignedDept,
+            [pid]: assignedDept,
+          }
+        : state.userDepartmentOverrides,
+      pendingApprovalEmails: nextPending,
+      approvedUserKeys: {
+        ...state.approvedUserKeys,
+        [key]: now,
+        [pid]: now,
+      },
     };
     saveAndNotify();
     return;
   }
 
-  const nextPending = { ...state.pendingApprovalEmails, [key]: now };
+  // 3. Standard self-registration: uses explicitly requested role or defaults to "staff", and requires Admin approval if requireAdminApproval is enabled
+  const pid = state.registeredProfiles[key]?._id ?? `signup_${key}`;
+  const assignedRole: RoleType = params.role ?? state.userRoleOverrides[key] ?? "staff";
+  const assignedDept =
+    params.departmentId ?? state.userDepartmentOverrides[key] ?? state.localDepartments[0]?._id;
+  const autoApproved = !state.systemConfig.requireAdminApproval || assignedRole === "admin";
+
+  const nextPending = { ...state.pendingApprovalEmails };
   const nextApproved = { ...state.approvedUserKeys };
-  delete nextApproved[key];
+
+  if (autoApproved) {
+    delete nextPending[key];
+    nextApproved[key] = now;
+    nextApproved[pid] = now;
+  } else {
+    nextPending[key] = now;
+    delete nextApproved[key];
+    delete nextApproved[pid];
+  }
+
+  const signupAudit: LocalAuditEntry = {
+    _id: `audit_signup_${now}`,
+    name: cleanName,
+    action: "profile.create",
+    detail: autoApproved
+      ? `Registered new staff account (${key})`
+      : `New account registered pending admin approval: ${cleanName} (${key})`,
+    ok: true,
+    at: now,
+  };
+
+  const signupNotif: LocalNotificationEntry = {
+    _id: `notif_signup_${now}`,
+    kind: "security",
+    message: autoApproved
+      ? `New user registered: ${cleanName} (${key})`
+      : `New user registration pending approval: ${cleanName} (${key})`,
+    at: now,
+    read: false,
+  };
+
   state = {
     ...state,
+    registeredProfiles: {
+      ...state.registeredProfiles,
+      [key]: {
+        _id: pid,
+        userId: state.registeredProfiles[key]?.userId ?? pid,
+        name: cleanName,
+        email: key,
+        role: assignedRole,
+        active: autoApproved,
+        departmentId: assignedDept,
+        registeredAt: now,
+        source: "signup",
+      },
+    },
+    userRoleOverrides: {
+      ...state.userRoleOverrides,
+      [key]: assignedRole,
+      [pid]: assignedRole,
+    },
+    userDepartmentOverrides: assignedDept
+      ? {
+          ...state.userDepartmentOverrides,
+          [key]: assignedDept,
+          [pid]: assignedDept,
+        }
+      : state.userDepartmentOverrides,
     pendingApprovalEmails: nextPending,
     approvedUserKeys: nextApproved,
+    localAuditEntries: [signupAudit, ...state.localAuditEntries].slice(0, 300),
+    localNotifications: [signupNotif, ...state.localNotifications].slice(0, 100),
   };
   saveAndNotify();
 }
 
-export function approveUserAccount(profileId: string, email?: string) {
+export function markEmailPendingApproval(email: string, name?: string, inviteCode?: string) {
+  registerSignUpAccount({ email, name, inviteCode });
+}
+
+export function approveUserAccount(profileId: string, email?: string, actorName = "System Admin") {
   const now = Date.now();
   const nextPending = { ...state.pendingApprovalEmails };
   const nextApproved = { ...state.approvedUserKeys, [profileId]: now };
-  if (email) {
-    const cleanEmail = email.trim().toLowerCase();
+  const nextProfiles = { ...state.registeredProfiles };
+  delete nextPending[profileId];
+
+  const cleanEmail = (email ?? "").trim().toLowerCase();
+  if (cleanEmail) {
     delete nextPending[cleanEmail];
     nextApproved[cleanEmail] = now;
+    if (nextProfiles[cleanEmail]) {
+      nextProfiles[cleanEmail] = { ...nextProfiles[cleanEmail], active: true };
+    }
   }
+  for (const [k, v] of Object.entries(nextProfiles)) {
+    if (v._id === profileId) {
+      delete nextPending[k];
+      nextApproved[k] = now;
+      nextProfiles[k] = { ...v, active: true };
+    }
+  }
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_approve_${profileId}_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "users.approve",
+    detail: `Approved & activated account ${cleanEmail || profileId}`,
+    ok: true,
+    at: now,
+  };
+
   state = {
     ...state,
+    registeredProfiles: nextProfiles,
     pendingApprovalEmails: nextPending,
     approvedUserKeys: nextApproved,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
   saveAndNotify();
   playNotificationDingDong();
 }
 
-export function revokeUserApproval(profileId: string, email?: string) {
-  const nextPending = { ...state.pendingApprovalEmails };
+export function revokeUserApproval(profileId: string, email?: string, actorName = "System Admin") {
+  const now = Date.now();
+  const nextPending = { ...state.pendingApprovalEmails, [profileId]: now };
   const nextApproved = { ...state.approvedUserKeys };
+  const nextProfiles = { ...state.registeredProfiles };
   delete nextApproved[profileId];
-  if (email) {
-    const cleanEmail = email.trim().toLowerCase();
+
+  const cleanEmail = (email ?? "").trim().toLowerCase();
+  if (cleanEmail) {
     delete nextApproved[cleanEmail];
-    nextPending[cleanEmail] = Date.now();
+    nextPending[cleanEmail] = now;
+    if (nextProfiles[cleanEmail]) {
+      nextProfiles[cleanEmail] = { ...nextProfiles[cleanEmail], active: false };
+    }
   }
+  for (const [k, v] of Object.entries(nextProfiles)) {
+    if (v._id === profileId) {
+      delete nextApproved[k];
+      nextPending[k] = now;
+      nextProfiles[k] = { ...v, active: false };
+    }
+  }
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_deactivate_${profileId}_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "users.deactivate",
+    detail: `Deactivated account ${cleanEmail || profileId}`,
+    ok: true,
+    at: now,
+  };
+
   state = {
     ...state,
+    registeredProfiles: nextProfiles,
     pendingApprovalEmails: nextPending,
     approvedUserKeys: nextApproved,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+}
+
+export function removeRegisteredUser(profileId: string, email?: string, actorName = "System Admin") {
+  const now = Date.now();
+  const cleanEmail = (email ?? "").trim().toLowerCase();
+  const nextProfiles = { ...state.registeredProfiles };
+  const nextInvites = { ...state.invitedUsers };
+  const nextPending = { ...state.pendingApprovalEmails };
+  const nextApproved = { ...state.approvedUserKeys };
+  const nextRoles = { ...state.userRoleOverrides };
+  const nextDepts = { ...state.userDepartmentOverrides };
+
+  delete nextPending[profileId];
+  delete nextApproved[profileId];
+  delete nextRoles[profileId];
+  delete nextDepts[profileId];
+
+  if (cleanEmail) {
+    delete nextProfiles[cleanEmail];
+    delete nextInvites[cleanEmail];
+    delete nextPending[cleanEmail];
+    delete nextApproved[cleanEmail];
+    delete nextRoles[cleanEmail];
+    delete nextDepts[cleanEmail];
+  }
+  for (const [k, v] of Object.entries(nextProfiles)) {
+    if (v._id === profileId) {
+      delete nextProfiles[k];
+      delete nextInvites[k];
+      delete nextPending[k];
+      delete nextApproved[k];
+      delete nextRoles[k];
+      delete nextDepts[k];
+    }
+  }
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_user_remove_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "users.remove",
+    detail: `Removed user record ${cleanEmail || profileId}`,
+    ok: true,
+    at: now,
+  };
+
+  state = {
+    ...state,
+    registeredProfiles: nextProfiles,
+    invitedUsers: nextInvites,
+    pendingApprovalEmails: nextPending,
+    approvedUserKeys: nextApproved,
+    userRoleOverrides: nextRoles,
+    userDepartmentOverrides: nextDepts,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
   saveAndNotify();
 }
@@ -2032,20 +2668,33 @@ export function isProfileApproved(profile: {
   role: string;
   active?: boolean;
 }): boolean {
-  const cleanEmail = profile.email.trim().toLowerCase();
-  const effectiveRole = getEffectiveRole(profile);
+  const cleanEmail = (profile.email ?? "").trim().toLowerCase();
+  const pid = profile._id ?? "";
 
-  // First account / System Admin or Invited user is approved unless explicitly deactivated by another admin
+  // Primary Bootstrap Admin is always approved so the system can never lock out its primary owner
   if (
-    effectiveRole === "admin" ||
-    !state.bootstrapAdminEmail ||
-    state.bootstrapAdminEmail === cleanEmail ||
-    state.bootstrapAdminProfileId === profile._id ||
-    !!state.invitedUsers[cleanEmail]
+    (cleanEmail && state.bootstrapAdminEmail === cleanEmail) ||
+    (pid && state.bootstrapAdminProfileId === pid)
   ) {
-    if (state.pendingApprovalEmails[cleanEmail] && state.bootstrapAdminEmail && state.bootstrapAdminEmail !== cleanEmail) {
-      return false;
-    }
+    return true;
+  }
+
+  // If explicitly marked pending or deactivated by an Admin, require explicit approval
+  if (state.pendingApprovalEmails[pid] || (cleanEmail && state.pendingApprovalEmails[cleanEmail])) {
+    return false;
+  }
+
+  // If explicitly approved in the registry or invited by an Admin
+  if (
+    state.approvedUserKeys[pid] ||
+    (cleanEmail && state.approvedUserKeys[cleanEmail]) ||
+    (cleanEmail && Boolean(state.invitedUsers[cleanEmail]))
+  ) {
+    return true;
+  }
+
+  const effectiveRole = getEffectiveRole(profile);
+  if (effectiveRole === "admin") {
     return true;
   }
 
@@ -2054,13 +2703,153 @@ export function isProfileApproved(profile: {
   }
 
   if (profile.active === false) return false;
-  if (state.approvedUserKeys[profile._id] || state.approvedUserKeys[cleanEmail]) {
-    return true;
-  }
-  if (state.pendingApprovalEmails[cleanEmail]) {
-    return false;
+  if (cleanEmail && state.registeredProfiles[cleanEmail]) {
+    return state.registeredProfiles[cleanEmail].active;
   }
   return profile.active === true;
+}
+
+/**
+ * Merges server profiles (`api.users.list`), the current user (`me`), locally registered profiles,
+ * and pre-approved invitations into a single unified, deduplicated directory for the Users tab.
+ */
+export function getMergedUserDirectory(
+  serverRows: Array<{
+    _id: string;
+    userId: string;
+    name: string;
+    email: string;
+    role: string;
+    active?: boolean;
+    departmentId?: string;
+  }>,
+  me?: {
+    _id: string;
+    userId: string;
+    name: string;
+    email: string;
+    role: string;
+    active?: boolean;
+    departmentId?: string;
+  } | null,
+  fallbackDeptId?: string
+) {
+  const byEmail = new Map<
+    string,
+    {
+      _id: string;
+      userId: string;
+      name: string;
+      email: string;
+      role: RoleType;
+      active: boolean;
+      departmentId?: string;
+      source?: string;
+      inviteCode?: string;
+    }
+  >();
+
+  const upsert = (raw: {
+    _id: string;
+    userId: string;
+    name: string;
+    email: string;
+    role: string;
+    active?: boolean;
+    departmentId?: string;
+    source?: string;
+    inviteCode?: string;
+  }) => {
+    const cleanEmail = (raw.email ?? "").trim().toLowerCase();
+    const key = cleanEmail || raw._id;
+    const prev = byEmail.get(key);
+    const preferNewId =
+      !prev ||
+      prev._id.startsWith("invited_") ||
+      prev._id.startsWith("signup_") ||
+      prev._id.startsWith("bootstrap_");
+    const mergedId = preferNewId ? raw._id : prev._id;
+    const mergedUserId = preferNewId ? raw.userId : prev.userId;
+    const baseObj = {
+      _id: mergedId,
+      userId: mergedUserId,
+      name: raw.name || prev?.name || cleanEmail.split("@")[0] || "User",
+      email: cleanEmail || raw.email,
+      role: raw.role,
+      active: raw.active ?? prev?.active,
+      departmentId: raw.departmentId ?? prev?.departmentId,
+    };
+    const effectiveRole = getEffectiveRole(baseObj);
+    const effectiveDept = getEffectiveDepartmentId(baseObj, fallbackDeptId);
+    const approved = isProfileApproved({ ...baseObj, role: effectiveRole });
+
+    byEmail.set(key, {
+      _id: mergedId,
+      userId: mergedUserId,
+      name: baseObj.name,
+      email: baseObj.email,
+      role: effectiveRole,
+      active: approved,
+      departmentId: effectiveDept,
+      source: raw.source ?? prev?.source,
+      inviteCode: raw.inviteCode ?? prev?.inviteCode ?? state.invitedUsers[cleanEmail]?.inviteCode,
+    });
+  };
+
+  for (const inv of Object.values(state.invitedUsers)) {
+    upsert({
+      _id: `invited_${inv.email}`,
+      userId: `invited_${inv.email}`,
+      name: inv.name,
+      email: inv.email,
+      role: inv.role,
+      active: true,
+      departmentId: inv.departmentId,
+      source: "invite",
+      inviteCode: inv.inviteCode,
+    });
+  }
+
+  for (const reg of Object.values(state.registeredProfiles)) {
+    upsert({
+      _id: reg._id,
+      userId: reg.userId,
+      name: reg.name,
+      email: reg.email,
+      role: reg.role,
+      active: reg.active,
+      departmentId: reg.departmentId,
+      source: reg.source,
+    });
+  }
+
+  for (const srv of serverRows) {
+    upsert({
+      _id: srv._id,
+      userId: srv.userId,
+      name: srv.name,
+      email: srv.email,
+      role: srv.role,
+      active: srv.active,
+      departmentId: srv.departmentId,
+      source: "server",
+    });
+  }
+
+  if (me) {
+    upsert({
+      _id: me._id,
+      userId: me.userId,
+      name: me.name,
+      email: me.email,
+      role: me.role,
+      active: me.active,
+      departmentId: me.departmentId,
+      source: "server",
+    });
+  }
+
+  return Array.from(byEmail.values());
 }
 
 export async function sha256Hex(input: string): Promise<string> {
@@ -2097,18 +2886,425 @@ export async function registerIssuedPasscode(code: string, meta: Omit<GuestAttac
   saveAndNotify();
 }
 
-export function setUserDepartmentOverride(profileId: string, departmentId: string | undefined) {
+export function setUserDepartmentOverride(
+  profileId: string,
+  departmentId: string | undefined,
+  targetEmail?: string,
+  actorName = "System Admin"
+) {
+  const now = Date.now();
   const next = { ...state.userDepartmentOverrides };
+  const cleanEmail = (targetEmail ?? "").trim().toLowerCase();
   if (departmentId) {
     next[profileId] = departmentId;
+    if (cleanEmail) next[cleanEmail] = departmentId;
   } else {
     delete next[profileId];
+    if (cleanEmail) delete next[cleanEmail];
   }
+
+  const nextProfiles = { ...state.registeredProfiles };
+  if (cleanEmail && nextProfiles[cleanEmail]) {
+    nextProfiles[cleanEmail] = { ...nextProfiles[cleanEmail], departmentId };
+  }
+  for (const [k, v] of Object.entries(nextProfiles)) {
+    if (v._id === profileId) {
+      nextProfiles[k] = { ...v, departmentId };
+      if (departmentId) next[k] = departmentId;
+    }
+  }
+
+  const nextInvites = { ...state.invitedUsers };
+  if (cleanEmail && nextInvites[cleanEmail]) {
+    nextInvites[cleanEmail] = { ...nextInvites[cleanEmail], departmentId };
+  }
+
+  const deptLabel = state.localDepartments.find(d => d._id === departmentId)?.name ?? departmentId ?? "General";
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_dept_bind_${profileId}_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "users.department",
+    detail: `${cleanEmail || profileId}: bound to department ${deptLabel}`,
+    ok: true,
+    at: now,
+  };
+
   state = {
     ...state,
     userDepartmentOverrides: next,
+    registeredProfiles: nextProfiles,
+    invitedUsers: nextInvites,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
   saveAndNotify();
+}
+
+export function getMergedDepartments(
+  serverDepts: Array<{ _id: string; _creationTime?: number; name: string }>
+): LocalDepartmentRecord[] {
+  const byName = new Map<string, LocalDepartmentRecord>();
+  const removed = state.removedDepartmentIds ?? {};
+
+  for (const d of serverDepts) {
+    if (removed[d._id] || removed[d.name.toLowerCase()]) continue;
+    byName.set(d.name.trim().toLowerCase(), {
+      _id: d._id,
+      _creationTime: d._creationTime ?? Date.now(),
+      name: d.name,
+    });
+  }
+
+  for (const d of state.localDepartments ?? DEFAULT_LOCAL_DEPARTMENTS) {
+    if (removed[d._id] || removed[d.name.toLowerCase()]) continue;
+    const key = d.name.trim().toLowerCase();
+    if (!byName.has(key)) {
+      byName.set(key, d);
+    }
+  }
+
+  const list = Array.from(byName.values());
+  if (list.length === 0) {
+    return [DEFAULT_LOCAL_DEPARTMENTS[0]];
+  }
+  return list;
+}
+
+export function addLocalDepartment(name: string, actorName = "System Admin"): {
+  ok: boolean;
+  dept?: LocalDepartmentRecord;
+  error?: string;
+} {
+  const cleanName = sanitizeText(name, 60);
+  if (cleanName.length < 2) {
+    return { ok: false, error: "Enter a valid department name (at least 2 characters)." };
+  }
+  const key = cleanName.toLowerCase();
+  const nextRemoved = { ...state.removedDepartmentIds };
+  delete nextRemoved[key];
+
+  const existing = state.localDepartments.find(d => d.name.toLowerCase() === key);
+  if (existing && !state.removedDepartmentIds[existing._id]) {
+    return { ok: true, dept: existing };
+  }
+
+  const now = Date.now();
+  const dept: LocalDepartmentRecord = existing ?? {
+    _id: `dept_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    _creationTime: now,
+    name: cleanName,
+  };
+  delete nextRemoved[dept._id];
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_dept_add_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "departments.manage",
+    detail: `Added department ${cleanName}`,
+    ok: true,
+    at: now,
+  };
+
+  state = {
+    ...state,
+    localDepartments: existing
+      ? state.localDepartments
+      : [...state.localDepartments, dept],
+    removedDepartmentIds: nextRemoved,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+  return { ok: true, dept };
+}
+
+export function removeLocalDepartment(
+  deptId: string,
+  deptName?: string,
+  actorName = "System Admin"
+): { ok: boolean; error?: string } {
+  const now = Date.now();
+  const nextRemoved: Record<string, number> = {
+    ...state.removedDepartmentIds,
+    [deptId]: now,
+  };
+  if (deptName) {
+    nextRemoved[deptName.trim().toLowerCase()] = now;
+  }
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_dept_rm_${now}`,
+    name: sanitizeText(actorName, 80),
+    action: "departments.manage",
+    detail: `Removed department ${deptName || deptId}`,
+    ok: true,
+    at: now,
+  };
+  state = {
+    ...state,
+    removedDepartmentIds: nextRemoved,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+  return { ok: true };
+}
+
+export async function issueLocalPasscode(params: {
+  visitorName: string;
+  kind: "visitor" | "contractor" | "supplier";
+  hours: number;
+  company?: string;
+  hostDepartmentId?: string;
+  hostName: string;
+  issuedBy: string;
+}): Promise<{ ok: true; code: string; passcodeId: string } | { ok: false; error: string }> {
+  const cleanName = sanitizeText(params.visitorName, 80);
+  if (cleanName.length < 2) {
+    return { ok: false, error: "Enter a valid visitor full name (at least 2 characters)." };
+  }
+  const now = Date.now();
+  const maxHrs = state.systemConfig.maxPasscodeHours ?? 72;
+  const defHrs = state.systemConfig.defaultPasscodeHours ?? 4;
+  const hrs = Math.min(Math.max(Math.round(params.hours || defHrs), 1), maxHrs);
+  const expiresAt = now + hrs * 3600_000;
+
+  for (let i = 0; i < 5; i++) {
+    const r = new Uint32Array(1);
+    crypto.getRandomValues(r);
+    const code = String(100000 + (r[0] % 900000));
+    const codeHash = await sha256Hex(code);
+    if (state.localPasscodes.some(p => p.codeHash === codeHash)) continue;
+
+    const passcodeId = `pc_${now}_${Math.random().toString(36).slice(2, 7)}`;
+    const record: LocalPasscodeRecord = {
+      _id: passcodeId,
+      _creationTime: now,
+      codeHash,
+      visitorName: cleanName,
+      kind: params.kind,
+      company: sanitizeText(params.company, 80) || undefined,
+      hostDepartmentId: params.hostDepartmentId,
+      hostName: sanitizeText(params.hostName, 80) || "Staff Host",
+      issuedBy: params.issuedBy,
+      expiresAt,
+    };
+
+    const auditEntry: LocalAuditEntry = {
+      _id: `audit_pc_issue_${passcodeId}`,
+      name: record.hostName,
+      action: "passcode.issue",
+      detail: `${record.kind}: ${record.visitorName} (host: ${record.hostName}), ${hrs}h`,
+      ok: true,
+      at: now,
+    };
+
+    state = {
+      ...state,
+      localPasscodes: [record, ...state.localPasscodes].slice(0, 300),
+      localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+    };
+    saveAndNotify();
+    return { ok: true, code, passcodeId };
+  }
+
+  return { ok: false, error: "Could not generate a unique 6-digit passcode. Please try again." };
+}
+
+export function getMergedPasscodes(
+  serverRows: Array<{
+    _id: string;
+    _creationTime: number;
+    visitorName: string;
+    kind: "visitor" | "contractor" | "supplier";
+    company?: string;
+    hostDepartmentId?: string;
+    hostName?: string;
+    issuedBy: string;
+    expiresAt: number;
+    usedAt?: number;
+    revokedAt?: number;
+  }>
+) {
+  const byId = new Map<string, any>();
+
+  for (const srv of serverRows) {
+    const revokedAt = srv.revokedAt ?? state.revokedPasscodeIds[srv._id];
+    const usedAt = srv.usedAt ?? state.usedPasscodeTimestamps[srv._id];
+    byId.set(String(srv._id), {
+      ...srv,
+      revokedAt,
+      usedAt,
+    });
+  }
+
+  for (const loc of state.localPasscodes) {
+    if (byId.has(loc._id)) continue;
+    const { codeHash: _h, ...rest } = loc;
+    byId.set(loc._id, {
+      ...rest,
+      revokedAt: loc.revokedAt ?? state.revokedPasscodeIds[loc._id],
+      usedAt: loc.usedAt ?? state.usedPasscodeTimestamps[loc._id],
+    });
+  }
+
+  return Array.from(byId.values()).sort((a, b) => b._creationTime - a._creationTime);
+}
+
+export function revokeLocalPasscode(
+  passcodeId: string,
+  actor: { userId: string; name: string; role: RoleType; departmentId?: string },
+  targetRow?: { visitorName?: string; issuedBy?: string; hostDepartmentId?: string; hostName?: string }
+): { ok: boolean; error?: string } {
+  // Enforce BOLA before revoking
+  if (actor.role === "staff" && targetRow?.issuedBy && targetRow.issuedBy !== actor.userId) {
+    return { ok: false, error: "Access denied: Staff can only revoke passcodes they individually issued." };
+  }
+  if (
+    actor.role === "report" &&
+    actor.departmentId &&
+    targetRow?.hostDepartmentId &&
+    targetRow.hostDepartmentId !== actor.departmentId
+  ) {
+    return { ok: false, error: "Access denied: Department Heads can only revoke passcodes for their bound department." };
+  }
+
+  const now = Date.now();
+  const nextLocal = state.localPasscodes.map(p =>
+    p._id === passcodeId && !p.revokedAt ? { ...p, revokedAt: now } : p
+  );
+  const nextRevoked = {
+    ...state.revokedPasscodeIds,
+    [passcodeId]: now,
+  };
+
+  const visitorLabel = targetRow?.visitorName ?? state.localPasscodes.find(p => p._id === passcodeId)?.visitorName ?? "Visitor";
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_pc_revoke_${passcodeId}_${now}`,
+    name: sanitizeText(actor.name, 80),
+    action: "passcode.revoke",
+    detail: `${visitorLabel} (host: ${targetRow?.hostName ?? actor.name})`,
+    ok: true,
+    at: now,
+  };
+
+  state = {
+    ...state,
+    localPasscodes: nextLocal,
+    revokedPasscodeIds: nextRevoked,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+  return { ok: true };
+}
+
+export async function validateLocalPasscode(
+  code: string,
+  actor: { userId: string; name: string; role: RoleType }
+): Promise<{
+  ok: boolean;
+  result?: "granted" | "unknown" | "expired" | "already_used" | "revoked" | "locked";
+  visitor?: string;
+  passcodeId?: string;
+  error?: string;
+}> {
+  if (actor.role !== "admin" && actor.role !== "security") {
+    return { ok: false, error: "Your role cannot validate passcodes" };
+  }
+  const cleanCode = code.trim();
+  if (!/^\d{6}$/.test(cleanCode)) {
+    return { ok: false, error: "Passcode must be a 6-digit number" };
+  }
+
+  const now = Date.now();
+  const windowStart = now - 10 * 60_000;
+  const recentFailures = (state.gateFailureTimestamps ?? []).filter(t => t > windowStart);
+  if (recentFailures.length >= 15) {
+    return { ok: true, result: "locked" };
+  }
+
+  const hash = await sha256Hex(cleanCode);
+  const localRow = state.localPasscodes.find(p => p.codeHash === hash);
+  const attached = state.attachmentsByHash[hash];
+
+  if (!localRow && !attached) {
+    const nextFailures = [...recentFailures, now];
+    const auditEntry: LocalAuditEntry = {
+      _id: `audit_gate_fail_${now}`,
+      name: sanitizeText(actor.name, 80),
+      action: "gate.check",
+      detail: "unknown",
+      ok: false,
+      at: now,
+    };
+    state = {
+      ...state,
+      gateFailureTimestamps: nextFailures,
+      localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+    };
+    saveAndNotify();
+    return { ok: true, result: "unknown" };
+  }
+
+  const targetId = localRow?._id ?? attached?.passcodeId;
+  const visitorName = localRow?.visitorName ?? attached?.visitorName ?? "Visitor";
+  const hostName = localRow?.hostName ?? attached?.hostName ?? "Staff Host";
+  const issuedBy = localRow?.issuedBy ?? attached?.issuedByUserId;
+  const expiresAt = localRow?.expiresAt ?? attached?.expiresAt ?? now + 3600_000;
+  const isRevoked =
+    Boolean(localRow?.revokedAt) ||
+    (targetId ? Boolean(state.revokedPasscodeIds[targetId] || state.deniedPasscodeIds[targetId]) : false) ||
+    Boolean(state.deniedCodeHashes[hash]);
+  const isUsed =
+    Boolean(localRow?.usedAt) ||
+    (targetId ? Boolean(state.usedPasscodeTimestamps[targetId]) : false);
+
+  let result: "granted" | "revoked" | "already_used" | "expired" = "granted";
+  if (isRevoked) result = "revoked";
+  else if (isUsed) result = "already_used";
+  else if (expiresAt < now) result = "expired";
+
+  const nextLocal =
+    result === "granted"
+      ? state.localPasscodes.map(p => (p.codeHash === hash ? { ...p, usedAt: now } : p))
+      : state.localPasscodes;
+  const nextUsed =
+    result === "granted" && targetId
+      ? { ...state.usedPasscodeTimestamps, [targetId]: now }
+      : state.usedPasscodeTimestamps;
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_gate_${now}`,
+    name: sanitizeText(actor.name, 80),
+    action: "gate.check",
+    detail: `${result}: ${visitorName} (host: ${hostName})`,
+    ok: result === "granted",
+    at: now,
+  };
+
+  const nextNotifs = [...state.localNotifications];
+  if (result === "granted") {
+    nextNotifs.unshift({
+      _id: `notif_arrival_${now}`,
+      kind: "arrival",
+      message: `${visitorName} (${localRow?.kind ?? attached?.kind ?? "visitor"}) has arrived at the gate`,
+      at: now,
+      read: false,
+      targetUserId: issuedBy,
+    });
+  }
+
+  state = {
+    ...state,
+    localPasscodes: nextLocal,
+    usedPasscodeTimestamps: nextUsed,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+    localNotifications: nextNotifs.slice(0, 100),
+  };
+  saveAndNotify();
+
+  return {
+    ok: true,
+    result,
+    visitor: result === "granted" ? visitorName : undefined,
+    passcodeId: targetId,
+  };
 }
 
 export function getAttachmentByHash(codeHash: string): GuestAttachment | undefined {

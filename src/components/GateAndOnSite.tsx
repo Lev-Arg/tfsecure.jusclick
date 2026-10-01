@@ -20,15 +20,21 @@ import {
   getAttachmentByName,
   getAttachmentByPasscodeId,
   getCsrfToken,
+  getEffectiveDepartmentId,
   getEffectiveRole,
+  getMergedDepartments,
+  getMergedPasscodes,
+  getMergedUserDirectory,
   getNextAvailableBadge,
   isProfileApproved,
   recordGateDenial,
   recordGuestCheckIn,
   recordGuestCheckOut,
+  revokeLocalPasscode,
   sanitizeText,
   sha256Hex,
   useGateRegistry,
+  validateLocalPasscode,
   verifyCsrfToken,
 } from "../lib/gateRegistry";
 
@@ -80,11 +86,24 @@ export type UnifiedOnSitePerson = {
 };
 
 export function useUnifiedOnSiteList() {
-  const passcodes = useQuery(api.passcodes.list) ?? [];
-  const depts = useQuery(api.departments.list) ?? [];
-  const users = useQuery(api.users.list) ?? [];
+  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
+  const remoteUsers = useQuery(api.users.list) ?? [];
   const me = useQuery(api.users.me);
   const registry = useGateRegistry();
+
+  const passcodes = useMemo(
+    () => getMergedPasscodes(remotePasscodes as any),
+    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
+  const users = useMemo(
+    () => getMergedUserDirectory(remoteUsers as any, me as any),
+    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
+  );
 
   const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
 
@@ -93,7 +112,7 @@ export function useUnifiedOnSiteList() {
       return { activeOnSite: [], checkedOutHistory: [], all: [] };
     }
 
-    const myDeptId = me.departmentId ?? registry.userDepartmentOverrides[me._id] ?? depts[0]?._id;
+    const myDeptId = getEffectiveDepartmentId(me) ?? depts[0]?._id;
     const myDeptName = myDeptId ? deptName(myDeptId) : "HSE & Security";
 
     const map = new Map<string, UnifiedOnSitePerson>();
@@ -231,12 +250,25 @@ type PendingCandidate = {
 export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string; onNavigateOnSite: () => void }) {
   const validate = useMutation(api.passcodes.validate);
   const revoke = useMutation(api.passcodes.revoke);
-  const passcodes = useQuery(api.passcodes.list) ?? [];
-  const depts = useQuery(api.departments.list) ?? [];
-  const users = useQuery(api.users.list) ?? [];
+  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
+  const remoteDepts = useQuery(api.departments.list) ?? [];
+  const remoteUsers = useQuery(api.users.list) ?? [];
   const me = useQuery(api.users.me);
   const registry = useGateRegistry();
   const { activeOnSite } = useUnifiedOnSiteList();
+
+  const passcodes = useMemo(
+    () => getMergedPasscodes(remotePasscodes as any),
+    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
+  );
+  const depts = useMemo(
+    () => getMergedDepartments(remoteDepts as any),
+    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
+  );
+  const users = useMemo(
+    () => getMergedUserDirectory(remoteUsers as any, me as any),
+    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
+  );
 
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -394,10 +426,19 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         return;
       }
 
-      const r = await validate({ code: clean });
+      const gateActor = {
+        userId: me?.userId ?? operatorName,
+        name: operatorName,
+        role: effectiveRole,
+      };
+      let r: any = await validate({ code: clean });
       if (!r.ok) {
-        setBanner({ type: "denied", title: "ERROR", text: r.error, at: now });
-        return;
+        const localCheck = await validateLocalPasscode(clean, gateActor);
+        if (!localCheck.ok || !localCheck.result) {
+          setBanner({ type: "denied", title: "ERROR", text: localCheck.error ?? "Validation error", at: now });
+          return;
+        }
+        r = localCheck;
       }
 
       if (r.result !== "granted") {
@@ -513,16 +554,38 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
     setBusy(true);
     try {
       if (!pendingGuest.alreadyValidatedOnServer) {
-        const r = await validate({ code: pendingGuest.code });
-        if (!r.ok || r.result !== "granted") {
-          setBanner({
-            type: "denied",
-            title: "FAILED",
-            text: !r.ok ? r.error : ERROR_MESSAGES[r.result] ?? r.result,
-            at: Date.now(),
-          });
-          setPendingGuest(null);
-          return;
+        const gateActor = {
+          userId: me?.userId ?? operatorName,
+          name: operatorName,
+          role: effectiveRole,
+        };
+        if (pendingGuest.passcodeId?.startsWith("pc_")) {
+          const localRes = await validateLocalPasscode(pendingGuest.code, gateActor);
+          if (!localRes.ok || localRes.result !== "granted") {
+            setBanner({
+              type: "denied",
+              title: "FAILED",
+              text: !localRes.ok ? (localRes.error ?? "Failed") : ERROR_MESSAGES[localRes.result ?? "unknown"] ?? String(localRes.result),
+              at: Date.now(),
+            });
+            setPendingGuest(null);
+            return;
+          }
+        } else {
+          const r = await validate({ code: pendingGuest.code });
+          if (!r.ok || r.result !== "granted") {
+            const localRes = await validateLocalPasscode(pendingGuest.code, gateActor);
+            if (!localRes.ok || localRes.result !== "granted") {
+              setBanner({
+                type: "denied",
+                title: "FAILED",
+                text: !r.ok ? r.error : ERROR_MESSAGES[r.result] ?? r.result,
+                at: Date.now(),
+              });
+              setPendingGuest(null);
+              return;
+            }
+          }
         }
       }
 
@@ -578,10 +641,19 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         deptName: pendingGuest.deptName,
       });
       if (pendingGuest.passcodeId && !pendingGuest.alreadyValidatedOnServer) {
-        try {
-          await revoke({ id: pendingGuest.passcodeId as Id<"passcodes"> });
-        } catch {
-          // ignore if already used/revoked
+        const gateActor = {
+          userId: me?.userId ?? operatorName,
+          name: operatorName,
+          role: effectiveRole,
+        };
+        if (pendingGuest.passcodeId.startsWith("pc_")) {
+          revokeLocalPasscode(pendingGuest.passcodeId, gateActor);
+        } else {
+          try {
+            await revoke({ id: pendingGuest.passcodeId as Id<"passcodes"> });
+          } catch {
+            revokeLocalPasscode(pendingGuest.passcodeId, gateActor);
+          }
         }
       }
       setBanner({

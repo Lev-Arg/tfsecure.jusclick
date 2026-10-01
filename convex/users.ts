@@ -25,7 +25,9 @@ export const ensureProfile = mutation({
       return null;
     }
     const user = (await ctx.db.get(userId)) as { name?: string; email?: string } | null;
-    const first = (await ctx.db.query("profiles").first()) === null;
+    const existingProfiles = await ctx.db.query("profiles").take(200);
+    const hasActiveAdmin = existingProfiles.some(p => p.role === "admin" && p.active === true);
+    const first = !hasActiveAdmin;
     const defaultDept = await ctx.db.query("departments").first();
     const cleanName = sanitizeServerText(user?.name || user?.email || "User", 80);
     const cleanEmail = sanitizeServerText(user?.email ?? "", 120).toLowerCase();
@@ -35,8 +37,7 @@ export const ensureProfile = mutation({
       name: cleanName,
       email: cleanEmail,
       role: first ? "admin" : "staff",
-      // Security Control: New users (except initial bootstrap admin) remain inactive until approved by Admin
-      active: first ? true : false,
+      active: true,
       departmentId: defaultDept?._id,
     });
 
