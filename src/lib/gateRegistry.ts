@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type GuestAttachment = {
+  passcodeId?: string;
   codeHash: string;
   visitorName: string;
   company?: string;
@@ -36,16 +37,26 @@ export type OnSiteRecord = {
   notes?: string;
   checkedInAt: number;
   checkedInBy: string;
+  expiresAt?: number;
   checkedOutAt?: number;
   checkedOutBy?: string;
   checkoutNotes?: string;
 };
 
+export type GateDenialRecord = {
+  deniedAt: number;
+  deniedBy: string;
+  reason: string;
+};
+
 type RegistryState = {
   attachmentsByHash: Record<string, GuestAttachment>;
+  attachmentsByPasscodeId: Record<string, GuestAttachment>;
   attachmentsByName: Record<string, GuestAttachment>;
   onSiteRecords: OnSiteRecord[];
   checkedOutPasscodeIds: Record<string, { checkedOutAt: number; checkedOutBy: string; checkoutNotes?: string }>;
+  deniedPasscodeIds: Record<string, GateDenialRecord>;
+  deniedCodeHashes: Record<string, GateDenialRecord>;
   userDepartmentOverrides: Record<string, string>;
 };
 
@@ -58,12 +69,15 @@ function loadRegistry(): RegistryState {
       const parsed = JSON.parse(raw);
       return {
         attachmentsByHash: parsed.attachmentsByHash ?? {},
+        attachmentsByPasscodeId: parsed.attachmentsByPasscodeId ?? {},
         attachmentsByName: parsed.attachmentsByName ?? {},
         onSiteRecords: (parsed.onSiteRecords ?? []).map((r: any) => ({
           ...r,
           hostName: r.hostName || "Staff Host",
         })),
         checkedOutPasscodeIds: parsed.checkedOutPasscodeIds ?? {},
+        deniedPasscodeIds: parsed.deniedPasscodeIds ?? {},
+        deniedCodeHashes: parsed.deniedCodeHashes ?? {},
         userDepartmentOverrides: parsed.userDepartmentOverrides ?? {},
       };
     }
@@ -72,9 +86,12 @@ function loadRegistry(): RegistryState {
   }
   return {
     attachmentsByHash: {},
+    attachmentsByPasscodeId: {},
     attachmentsByName: {},
     onSiteRecords: [],
     checkedOutPasscodeIds: {},
+    deniedPasscodeIds: {},
+    deniedCodeHashes: {},
     userDepartmentOverrides: {},
   };
 }
@@ -101,9 +118,14 @@ export async function sha256Hex(input: string): Promise<string> {
 export async function registerIssuedPasscode(code: string, meta: Omit<GuestAttachment, "codeHash">) {
   const codeHash = await sha256Hex(code);
   const record: GuestAttachment = { ...meta, codeHash };
+  const nextByPasscodeId = { ...state.attachmentsByPasscodeId };
+  if (meta.passcodeId) {
+    nextByPasscodeId[meta.passcodeId] = record;
+  }
   state = {
     ...state,
     attachmentsByHash: { ...state.attachmentsByHash, [codeHash]: record },
+    attachmentsByPasscodeId: nextByPasscodeId,
     attachmentsByName: { ...state.attachmentsByName, [meta.visitorName.trim().toLowerCase()]: record },
   };
   saveAndNotify();
@@ -127,8 +149,65 @@ export function getAttachmentByHash(codeHash: string): GuestAttachment | undefin
   return state.attachmentsByHash[codeHash];
 }
 
-export function getAttachmentByName(visitorName: string): GuestAttachment | undefined {
-  return state.attachmentsByName[visitorName.trim().toLowerCase()];
+export function getAttachmentByPasscodeId(passcodeId?: string): GuestAttachment | undefined {
+  if (!passcodeId) return undefined;
+  return state.attachmentsByPasscodeId[passcodeId];
+}
+
+export function getAttachmentByName(visitorName: string, expectedExpiresAt?: number): GuestAttachment | undefined {
+  const key = visitorName.trim().toLowerCase();
+  // Prefer an exact passcode match by name + expiration proximity across all stored hash attachments
+  if (expectedExpiresAt !== undefined) {
+    const allByHash = Object.values(state.attachmentsByHash);
+    const exact = allByHash.find(
+      a => a.visitorName.trim().toLowerCase() === key && Math.abs(a.expiresAt - expectedExpiresAt) < 120_000
+    );
+    if (exact) return exact;
+  }
+  return state.attachmentsByName[key];
+}
+
+export function recordGateDenial(params: {
+  passcodeId?: string;
+  codeHash?: string;
+  deniedBy: string;
+  reason?: string;
+}) {
+  const entry: GateDenialRecord = {
+    deniedAt: Date.now(),
+    deniedBy: params.deniedBy,
+    reason: params.reason?.trim() || "Identity mismatch at gate",
+  };
+  const nextIds = { ...state.deniedPasscodeIds };
+  const nextHashes = { ...state.deniedCodeHashes };
+  if (params.passcodeId) nextIds[params.passcodeId] = entry;
+  if (params.codeHash) nextHashes[params.codeHash] = entry;
+
+  // Also ensure any active on-site record for this passcode is removed if it existed
+  const nextOnSite = state.onSiteRecords.filter(
+    r =>
+      !(
+        (params.passcodeId && r.passcodeId === params.passcodeId) ||
+        (params.codeHash && r.codeHash === params.codeHash)
+      )
+  );
+
+  state = {
+    ...state,
+    deniedPasscodeIds: nextIds,
+    deniedCodeHashes: nextHashes,
+    onSiteRecords: nextOnSite,
+  };
+  saveAndNotify();
+}
+
+export function getNextAvailableBadge(activeBadges: string[]): string {
+  const inUse = new Set(activeBadges.map(b => b.trim().toUpperCase()));
+  let num = 101;
+  while (inUse.has(`TFC-${num}`)) {
+    num++;
+  }
+  return `TFC-${num}`;
 }
 
 export function recordGuestCheckIn(record: Omit<OnSiteRecord, "id">): OnSiteRecord {
@@ -140,7 +219,11 @@ export function recordGuestCheckIn(record: Omit<OnSiteRecord, "id">): OnSiteReco
   );
   const full: OnSiteRecord = {
     ...record,
-    id: existingIdx >= 0 ? state.onSiteRecords[existingIdx].id : `onsite_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    badgeNumber: record.badgeNumber.trim().toUpperCase() || "TFC-GATE",
+    id:
+      existingIdx >= 0
+        ? state.onSiteRecords[existingIdx].id
+        : `onsite_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
   };
   const nextList = [...state.onSiteRecords];
   if (existingIdx >= 0) {
@@ -168,6 +251,7 @@ export function recordGuestCheckOut(params: {
     hostName: string;
     deptName: string;
     checkedInAt: number;
+    expiresAt?: number;
   };
 }) {
   const now = Date.now();
@@ -182,7 +266,7 @@ export function recordGuestCheckOut(params: {
   if (idx >= 0) {
     nextList[idx] = {
       ...nextList[idx],
-      checkedOutAt: now,
+      checkedOutAt: Math.max(now, nextList[idx].checkedInAt),
       checkedOutBy: params.checkedOutBy,
       checkoutNotes: params.checkoutNotes,
     };
@@ -198,8 +282,9 @@ export function recordGuestCheckOut(params: {
       idType: "Verified at Gate",
       badgeNumber: "GATE-PASS",
       checkedInAt: params.fallbackVisitor.checkedInAt,
+      expiresAt: params.fallbackVisitor.expiresAt,
       checkedInBy: "Gate Security",
-      checkedOutAt: now,
+      checkedOutAt: Math.max(now, params.fallbackVisitor.checkedInAt),
       checkedOutBy: params.checkedOutBy,
       checkoutNotes: params.checkoutNotes,
     });
@@ -234,10 +319,17 @@ export function useGateRegistry() {
   return state;
 }
 
+/**
+ * Exports tabular data to CSV with OWASP Formula / CSV Injection mitigation.
+ */
 export function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
   const escapeCell = (val: string | number) => {
-    const s = String(val ?? "");
-    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    let s = String(val ?? "");
+    // Mitigate CSV Formula Injection (cells starting with =, +, -, @, tab, or CR)
+    if (/^[=+\-@\t\r]/.test(s)) {
+      s = `'${s}`;
+    }
+    if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
       return `"${s.replace(/"/g, '""')}"`;
     }
     return s;

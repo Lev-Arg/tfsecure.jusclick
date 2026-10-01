@@ -105,41 +105,30 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
     e.preventDefault();
     setErr("");
     setInfo("");
-    setBusy(true);
     const fd = new FormData(e.currentTarget);
-    const email = (String(fd.get("email") ?? "") || emailInput).trim();
+    const email = (String(fd.get("email") ?? "") || emailInput).trim().toLowerCase();
     const password = String(fd.get("password") ?? "");
+    const rawName = String(fd.get("name") ?? "").trim();
+
+    if (step === "signUp" && rawName.length < 2) {
+      setErr("Enter your full name (at least 2 characters).");
+      return;
+    }
+    if ((step === "signIn" || step === "signUp") && password.length < 8) {
+      setErr("Password must be at least 8 characters.");
+      return;
+    }
+
+    setBusy(true);
     try {
       if (step === "signIn" || step === "signUp") {
         fd.set("email", email);
+        if (step === "signUp") fd.set("name", rawName);
         fd.set("flow", step);
-        try {
-          const r = await signIn("password", fd);
-          if (!r.signingIn) {
-            setStep({ verify: email });
-            setInfo("Verification code sent to your email.");
-          }
-        } catch (innerErr: any) {
-          const msg = String(innerErr?.message ?? innerErr ?? "");
-          if (step === "signUp" && msg.toLowerCase().includes("already exists")) {
-            try {
-              const loginFd = new FormData();
-              loginFd.set("email", email);
-              loginFd.set("password", password);
-              loginFd.set("flow", "signIn");
-              const r = await signIn("password", loginFd);
-              if (!r.signingIn) {
-                setStep({ verify: email });
-                setInfo("Verification code sent to your email.");
-              }
-              return;
-            } catch {
-              setStep("signIn");
-              setInfo(`Account ${email} already exists. Please sign in.`);
-              return;
-            }
-          }
-          throw innerErr;
+        const r = await signIn("password", fd);
+        if (!r.signingIn) {
+          setStep({ verify: email });
+          setInfo("Verification code sent to your email.");
         }
       } else if (step === "forgot") {
         await signIn("password", { email, flow: "reset" });
@@ -165,7 +154,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         setErr(`No account found for ${email}.`);
       } else if (msg.toLowerCase().includes("already exists")) {
         setStep("signIn");
-        setInfo(`Account ${email} already exists. Please sign in.`);
+        setErr(`An account for ${email} already exists. Please sign in.`);
       } else {
         setErr(
           step === "signIn"
@@ -779,7 +768,7 @@ function Passcodes({
   };
 
   const getStatus = (p: (typeof rows)[number]) => {
-    if (p.revokedAt) return "Revoked";
+    if (p.revokedAt || registry.deniedPasscodeIds[p._id]) return "Revoked";
     if (p.usedAt) {
       const isCheckedOut =
         !!registry.checkedOutPasscodeIds[p._id] ||
@@ -793,13 +782,18 @@ function Passcodes({
   const handleIssueSingle = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrMsg("");
+    const cleanName = f.name.trim();
+    if (cleanName.length < 2) {
+      setErrMsg("Enter a valid guest full name (at least 2 characters).");
+      return;
+    }
     setBusy(true);
     try {
       const r = await issue({
-        visitorName: f.name,
+        visitorName: cleanName,
         kind: f.kind,
         hours,
-        company: f.company || undefined,
+        company: f.company.trim() || undefined,
         hostDepartmentId: boundDeptId,
       });
       if (!r.ok) {
@@ -1207,14 +1201,16 @@ function Passcodes({
               <option value="contractor">Contractor</option>
               <option value="supplier">Supplier</option>
             </select>
-            <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}>
-              <option value="all">All departments</option>
-              {depts.map(d => (
-                <option key={d._id} value={d._id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+            {role !== "staff" && (
+              <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}>
+                <option value="all">All departments</option>
+                {depts.map(d => (
+                  <option key={d._id} value={d._id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
 
@@ -1268,7 +1264,7 @@ function Passcodes({
                     </td>
                     <td className="no-print" style={{ textAlign: "right" }}>
                       {st === "Active" &&
-                        role !== "staff" &&
+                        (role === "admin" || role === "security" || (role === "staff" && p.issuedBy === me.userId)) &&
                         (confirmRevokeId === p._id ? (
                           <span style={{ display: "inline-flex", gap: 6 }}>
                             <button
@@ -1529,6 +1525,8 @@ function Departments() {
                           </span>
                         ) : (
                           <button
+                            disabled={rows.length <= 1}
+                            title={rows.length <= 1 ? "Cannot remove the last remaining department" : undefined}
                             style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                             onClick={() => setConfirmRemoveId(d._id)}
                           >
@@ -1698,7 +1696,9 @@ function Users({ meId }: { meId: string }) {
               {filtered.map(u => {
                 const self = u._id === meId;
                 const isActive = u.active !== false;
-                const effectiveDeptId = registry.userDepartmentOverrides[u._id] ?? u.departmentId ?? depts[0]?._id ?? "";
+                const activeAdminCount = rows.filter(x => x.role === "admin" && x.active !== false).length;
+                const isLastActiveAdmin = u.role === "admin" && isActive && activeAdminCount <= 1;
+                const effectiveDeptId = u.departmentId ?? registry.userDepartmentOverrides[u._id] ?? depts[0]?._id ?? "";
                 return (
                   <tr key={u._id}>
                     <td>
@@ -1708,7 +1708,7 @@ function Users({ meId }: { meId: string }) {
                     <td className="mono">{u.email}</td>
                     <td>
                       <select
-                        disabled={self}
+                        disabled={self || isLastActiveAdmin}
                         value={u.role}
                         onChange={e => run(setRole({ profileId: u._id, role: e.target.value as any }))}
                       >
@@ -1735,7 +1735,7 @@ function Users({ meId }: { meId: string }) {
                     <td className={isActive ? "status-ok" : "status-err"}>{isActive ? "Active" : "Deactivated"}</td>
                     <td style={{ textAlign: "right" }}>
                       <button
-                        disabled={self}
+                        disabled={self || isLastActiveAdmin}
                         className={isActive ? "danger-btn" : ""}
                         style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
                         onClick={() => run(setActive({ profileId: u._id, active: !isActive }))}
@@ -2018,8 +2018,8 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     );
   }
 
-  const boundDeptId = ((registry.userDepartmentOverrides[me._id] as Id<"departments"> | undefined) ??
-    me.departmentId ??
+  const boundDeptId = (me.departmentId ??
+    (registry.userDepartmentOverrides[me._id] as Id<"departments"> | undefined) ??
     depts[0]?._id) as Id<"departments"> | undefined;
   const boundDeptName = depts.find(d => d._id === boundDeptId)?.name ?? "HSE & Security";
 

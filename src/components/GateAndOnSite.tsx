@@ -13,10 +13,14 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 import {
   downloadCsv,
   getAttachmentByHash,
   getAttachmentByName,
+  getAttachmentByPasscodeId,
+  getNextAvailableBadge,
+  recordGateDenial,
   recordGuestCheckIn,
   recordGuestCheckOut,
   sha256Hex,
@@ -62,6 +66,7 @@ export type UnifiedOnSitePerson = {
   purpose?: string;
   checkedInAt: number;
   checkedInBy: string;
+  expiresAt?: number;
   checkedOutAt?: number;
   checkedOutBy?: string;
   checkoutNotes?: string;
@@ -86,9 +91,20 @@ export function useUnifiedOnSiteList() {
       userByUserId.set(me.userId, { name: me.name, departmentId: me.departmentId });
     }
 
+    const passcodesById = new Map(passcodes.map(p => [String(p._id), p]));
+
     for (const r of registry.onSiteRecords) {
+      if (r.passcodeId && registry.deniedPasscodeIds[r.passcodeId]) continue;
+      if (r.codeHash && registry.deniedCodeHashes[r.codeHash]) continue;
+      const linkedPasscode = r.passcodeId ? passcodesById.get(r.passcodeId) : undefined;
+      if (linkedPasscode?.revokedAt) continue;
+
       const k = r.passcodeId || r.id;
-      const attached = getAttachmentByName(r.visitorName);
+      const attached =
+        getAttachmentByPasscodeId(r.passcodeId) ||
+        (r.codeHash ? getAttachmentByHash(r.codeHash) : undefined) ||
+        getAttachmentByName(r.visitorName, r.expiresAt ?? linkedPasscode?.expiresAt);
+
       map.set(k, {
         key: k,
         recordId: r.id,
@@ -96,7 +112,7 @@ export function useUnifiedOnSiteList() {
         visitorName: r.visitorName,
         company: r.company,
         kind: r.kind,
-        hostName: r.hostName || attached?.hostName || "Staff Host",
+        hostName: r.hostName || (linkedPasscode as any)?.hostName || attached?.hostName || "Staff Host",
         deptName: r.deptName || "General",
         badgeNumber: r.badgeNumber,
         idType: r.idType,
@@ -106,6 +122,7 @@ export function useUnifiedOnSiteList() {
         purpose: r.purpose,
         checkedInAt: r.checkedInAt,
         checkedInBy: r.checkedInBy,
+        expiresAt: r.expiresAt ?? linkedPasscode?.expiresAt ?? attached?.expiresAt,
         checkedOutAt: r.checkedOutAt,
         checkedOutBy: r.checkedOutBy,
         checkoutNotes: r.checkoutNotes,
@@ -113,9 +130,12 @@ export function useUnifiedOnSiteList() {
     }
 
     for (const p of passcodes) {
-      if (!p.usedAt) continue;
+      if (!p.usedAt || p.revokedAt) continue;
+      if (registry.deniedPasscodeIds[p._id]) continue;
       if (map.has(p._id)) continue;
-      const attached = getAttachmentByName(p.visitorName);
+      const attached = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
+      if (attached?.codeHash && registry.deniedCodeHashes[attached.codeHash]) continue;
+
       const issuer = userByUserId.get(p.issuedBy);
       const co = registry.checkedOutPasscodeIds[p._id];
       const resolvedHostName = (p as any).hostName || attached?.hostName || issuer?.name || "Staff Host";
@@ -136,6 +156,7 @@ export function useUnifiedOnSiteList() {
         purpose: attached?.purpose,
         checkedInAt: p.usedAt,
         checkedInBy: "Gate Security",
+        expiresAt: p.expiresAt,
         checkedOutAt: co?.checkedOutAt,
         checkedOutBy: co?.checkedOutBy,
         checkoutNotes: co?.checkoutNotes,
@@ -171,16 +192,18 @@ type PendingCandidate = {
 
 export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string; onNavigateOnSite: () => void }) {
   const validate = useMutation(api.passcodes.validate);
+  const revoke = useMutation(api.passcodes.revoke);
   const passcodes = useQuery(api.passcodes.list) ?? [];
   const depts = useQuery(api.departments.list) ?? [];
   const users = useQuery(api.users.list) ?? [];
   const me = useQuery(api.users.me);
+  const registry = useGateRegistry();
   const { activeOnSite } = useUnifiedOnSiteList();
 
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingGuest, setPendingGuest] = useState<PendingCandidate | null>(null);
-  const [badgeInput, setBadgeInput] = useState("TFC-01");
+  const [badgeInput, setBadgeInput] = useState("TFC-101");
   const [idTypeInput, setIdTypeInput] = useState("National ID");
   const [idNumberInput, setIdNumberInput] = useState("");
   const [vehicleInput, setVehicleInput] = useState("");
@@ -215,7 +238,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const handleInspectCode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const clean = code.trim();
-    if (clean.length !== 6) return;
+    if (!/^\d{6}$/.test(clean)) return;
 
     setBusy(true);
     setBanner(null);
@@ -223,37 +246,75 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
     try {
       const hash = await sha256Hex(clean);
-      const localAttachment = getAttachmentByHash(hash);
       const now = Date.now();
+
+      if (registry.deniedCodeHashes[hash]) {
+        setBanner({
+          type: "denied",
+          title: "DENIED AT GATE",
+          text: `This passcode was previously rejected at the gate (${registry.deniedCodeHashes[hash].reason}).`,
+          at: now,
+        });
+        setCode("");
+        return;
+      }
+
+      const localAttachment = getAttachmentByHash(hash);
 
       if (localAttachment) {
         const matchingRow =
+          (localAttachment.passcodeId
+            ? passcodes.find(p => String(p._id) === localAttachment.passcodeId)
+            : undefined) ??
           passcodes.find(
             p =>
               p.visitorName.trim().toLowerCase() === localAttachment.visitorName.trim().toLowerCase() &&
               Math.abs(p.expiresAt - localAttachment.expiresAt) < 120_000
-          ) ??
-          passcodes.find(
-            p =>
-              p.visitorName.trim().toLowerCase() === localAttachment.visitorName.trim().toLowerCase() &&
-              !p.usedAt &&
-              !p.revokedAt
           );
 
+        if (matchingRow && registry.deniedPasscodeIds[matchingRow._id]) {
+          setBanner({
+            type: "denied",
+            title: "DENIED AT GATE",
+            text: `${localAttachment.visitorName} was previously rejected at the gate.`,
+            at: now,
+          });
+          setCode("");
+          return;
+        }
         if (matchingRow?.revokedAt) {
-          setBanner({ type: "denied", title: "REVOKED", text: `${localAttachment.visitorName} passcode was revoked.`, at: now });
+          setBanner({
+            type: "denied",
+            title: "REVOKED",
+            text: `${localAttachment.visitorName} passcode was revoked.`,
+            at: now,
+          });
+          setCode("");
           return;
         }
         if (matchingRow?.usedAt) {
-          setBanner({ type: "denied", title: "ALREADY USED", text: `Checked in at ${fmt(matchingRow.usedAt)}.`, at: now });
+          setBanner({
+            type: "denied",
+            title: "ALREADY USED",
+            text: `Checked in at ${fmt(matchingRow.usedAt)}.`,
+            at: now,
+          });
+          setCode("");
           return;
         }
-        if (localAttachment.expiresAt < now) {
-          setBanner({ type: "denied", title: "EXPIRED", text: `Expired at ${fmt(localAttachment.expiresAt)}.`, at: now });
+        const effectiveExpiry = matchingRow?.expiresAt ?? localAttachment.expiresAt;
+        if (effectiveExpiry < now) {
+          setBanner({
+            type: "denied",
+            title: "EXPIRED",
+            text: `Expired at ${fmt(effectiveExpiry)}.`,
+            at: now,
+          });
+          setCode("");
           return;
         }
 
-        const nextBadge = `TFC-${String(activeOnSite.length + 101)}`;
+        const nextBadge = getNextAvailableBadge(activeOnSite.map(p => p.badgeNumber));
         setBadgeInput(nextBadge);
         setIdNumberInput(localAttachment.idNumber ?? "");
         setVehicleInput(localAttachment.vehiclePlate ?? "");
@@ -263,7 +324,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
           code: clean,
           codeHash: hash,
           alreadyValidatedOnServer: false,
-          passcodeId: matchingRow?._id,
+          passcodeId: matchingRow?._id ?? localAttachment.passcodeId,
           visitorName: localAttachment.visitorName,
           company: localAttachment.company || matchingRow?.company,
           kind: localAttachment.kind,
@@ -278,7 +339,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
           idNumber: localAttachment.idNumber,
           vehiclePlate: localAttachment.vehiclePlate,
           purpose: localAttachment.purpose,
-          expiresAt: matchingRow?.expiresAt ?? localAttachment.expiresAt,
+          expiresAt: effectiveExpiry,
         });
         return;
       }
@@ -301,9 +362,15 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       }
 
       const visitorName = r.visitor ?? "Guest";
-      const row = passcodes.find(p => p.visitorName.toLowerCase() === visitorName.toLowerCase());
-      const byName = getAttachmentByName(visitorName);
-      const nextBadge = `TFC-${String(activeOnSite.length + 101)}`;
+      // Match the most recently issued active/just-used passcode for this visitor
+      const row = passcodes.find(
+        p =>
+          p.visitorName.trim().toLowerCase() === visitorName.trim().toLowerCase() &&
+          !p.revokedAt &&
+          (!p.usedAt || Math.abs(p.usedAt - now) < 60_000)
+      );
+      const byName = getAttachmentByPasscodeId(row?._id) ?? getAttachmentByName(visitorName, row?.expiresAt);
+      const nextBadge = getNextAvailableBadge(activeOnSite.map(p => p.badgeNumber));
       setBadgeInput(nextBadge);
       setIdNumberInput(byName?.idNumber ?? "");
       setVehicleInput(byName?.vehiclePlate ?? "");
@@ -339,6 +406,59 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const handleCompleteCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pendingGuest) return;
+
+    const now = Date.now();
+    const normalizedBadge = badgeInput.trim().toUpperCase();
+    if (!normalizedBadge) {
+      setBanner({
+        type: "denied",
+        title: "BADGE REQUIRED",
+        text: "Assign a physical visitor badge number before completing check-in.",
+        at: now,
+      });
+      return;
+    }
+
+    const duplicateBadgeHolder = activeOnSite.find(
+      p => p.badgeNumber.trim().toUpperCase() === normalizedBadge && p.passcodeId !== pendingGuest.passcodeId
+    );
+    if (duplicateBadgeHolder) {
+      setBanner({
+        type: "denied",
+        title: "DUPLICATE BADGE",
+        text: `Badge ${normalizedBadge} is currently assigned to ${duplicateBadgeHolder.visitorName} on site.`,
+        at: now,
+      });
+      return;
+    }
+
+    if (pendingGuest.expiresAt && pendingGuest.expiresAt < now) {
+      setBanner({
+        type: "denied",
+        title: "EXPIRED",
+        text: `Passcode expired at ${fmt(pendingGuest.expiresAt)} before check-in could be completed.`,
+        at: now,
+      });
+      setPendingGuest(null);
+      setCode("");
+      return;
+    }
+
+    const liveRow = pendingGuest.passcodeId
+      ? passcodes.find(p => String(p._id) === pendingGuest.passcodeId)
+      : undefined;
+    if (liveRow?.revokedAt) {
+      setBanner({
+        type: "denied",
+        title: "REVOKED",
+        text: `Passcode for ${pendingGuest.visitorName} was revoked before check-in.`,
+        at: now,
+      });
+      setPendingGuest(null);
+      setCode("");
+      return;
+    }
+
     setBusy(true);
     try {
       if (!pendingGuest.alreadyValidatedOnServer) {
@@ -355,7 +475,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         }
       }
 
-      const now = Date.now();
+      const checkInTime = Date.now();
       recordGuestCheckIn({
         passcodeId: pendingGuest.passcodeId,
         codeHash: pendingGuest.codeHash,
@@ -367,20 +487,21 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         deptName: pendingGuest.deptName,
         phone: pendingGuest.phone,
         idType: idTypeInput,
-        idNumber: idNumberInput.trim() || pendingGuest.idNumber,
-        badgeNumber: badgeInput.trim() || "TFC-GATE",
-        vehiclePlate: vehicleInput.trim() || pendingGuest.vehiclePlate,
+        idNumber: idNumberInput.trim().slice(0, 40) || pendingGuest.idNumber,
+        badgeNumber: normalizedBadge,
+        vehiclePlate: vehicleInput.trim().toUpperCase().slice(0, 24) || pendingGuest.vehiclePlate,
         purpose: pendingGuest.purpose,
-        notes: guardNotes.trim() || undefined,
-        checkedInAt: now,
+        notes: guardNotes.trim().slice(0, 160) || undefined,
+        checkedInAt: checkInTime,
         checkedInBy: operatorName,
+        expiresAt: pendingGuest.expiresAt,
       });
 
       setBanner({
         type: "granted",
         title: "CHECKED IN",
-        text: `${pendingGuest.visitorName} (Host: ${pendingGuest.hostName}) registered on site (${badgeInput}).`,
-        at: now,
+        text: `${pendingGuest.visitorName} (Host: ${pendingGuest.hostName}) registered on site (${normalizedBadge}).`,
+        at: checkInTime,
       });
       setPendingGuest(null);
       setCode("");
@@ -389,16 +510,37 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
     }
   };
 
-  const handleRejectMismatch = () => {
+  const handleRejectMismatch = async () => {
     if (!pendingGuest) return;
-    setBanner({
-      type: "denied",
-      title: "DENIED",
-      text: `Check-in cancelled for ${pendingGuest.visitorName}.`,
-      at: Date.now(),
-    });
-    setPendingGuest(null);
-    setCode("");
+    setBusy(true);
+    try {
+      const reason = guardNotes.trim() || "Identity mismatch at gate";
+      // Record gate denial locally so this passcode never appears on site or gets reused
+      recordGateDenial({
+        passcodeId: pendingGuest.passcodeId,
+        codeHash: pendingGuest.codeHash,
+        deniedBy: operatorName,
+        reason,
+      });
+      // Also revoke on the server if not yet marked usedAt
+      if (pendingGuest.passcodeId && !pendingGuest.alreadyValidatedOnServer) {
+        try {
+          await revoke({ id: pendingGuest.passcodeId as Id<"passcodes"> });
+        } catch {
+          // ignore if already used/revoked
+        }
+      }
+      setBanner({
+        type: "denied",
+        title: "DENIED AT GATE",
+        text: `Entry denied for ${pendingGuest.visitorName} (${reason}). Passcode invalidated.`,
+        at: Date.now(),
+      });
+      setPendingGuest(null);
+      setCode("");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const appendDigit = (d: string) => {
@@ -521,7 +663,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                 <input
                   value={guardNotes}
                   onChange={e => setGuardNotes(e.target.value)}
-                  placeholder="Optional notes"
+                  placeholder="Optional notes / denial reason"
                 />
               </div>
             </div>
@@ -687,6 +829,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                                   hostName: person.hostName,
                                   deptName: person.deptName,
                                   checkedInAt: person.checkedInAt,
+                                  expiresAt: person.expiresAt,
                                 },
                               });
                               setCheckoutConfirmKey(null);
@@ -785,19 +928,22 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
         "Checked Out",
         "Status",
       ],
-      filtered.map(p => [
-        p.visitorName,
-        p.company ?? "",
-        p.kind,
-        p.hostName,
-        p.deptName,
-        p.badgeNumber,
-        `${p.idType}${p.idNumber ? ` (${p.idNumber})` : ""}`,
-        p.vehiclePlate ?? "",
-        new Date(p.checkedInAt).toISOString(),
-        p.checkedOutAt ? new Date(p.checkedOutAt).toISOString() : "",
-        p.checkedOutAt ? "Checked Out" : "On Site",
-      ])
+      filtered.map(p => {
+        const isOverstayed = !p.checkedOutAt && !!p.expiresAt && p.expiresAt < now;
+        return [
+          p.visitorName,
+          p.company ?? "",
+          p.kind,
+          p.hostName,
+          p.deptName,
+          p.badgeNumber,
+          `${p.idType}${p.idNumber ? ` (${p.idNumber})` : ""}`,
+          p.vehiclePlate ?? "",
+          new Date(p.checkedInAt).toISOString(),
+          p.checkedOutAt ? new Date(p.checkedOutAt).toISOString() : "",
+          p.checkedOutAt ? "Checked Out" : isOverstayed ? "Overstayed" : "On Site",
+        ];
+      })
     );
   };
 
@@ -887,92 +1033,99 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
               </tr>
             </thead>
             <tbody>
-              {filtered.map(person => (
-                <tr key={person.key}>
-                  <td style={{ fontWeight: 600 }}>
-                    <div>{person.visitorName}</div>
-                    {person.phone && <div className="meta-inline mono">{person.phone}</div>}
-                  </td>
-                  <td>{person.company || <span className="status-mute">—</span>}</td>
-                  <td style={{ textTransform: "capitalize" }}>{person.kind}</td>
-                  <td style={{ fontWeight: 500 }}>{person.hostName}</td>
-                  <td>{person.deptName}</td>
-                  <td>
-                    <span className="mono" style={{ fontWeight: 600 }}>{person.badgeNumber}</span>
-                    <div className="meta-inline">
-                      {person.idType}
-                      {person.idNumber ? ` · ${person.idNumber}` : ""}
-                    </div>
-                  </td>
-                  <td className="mono">{person.vehiclePlate || <span className="status-mute">—</span>}</td>
-                  <td className="mono">{fmt(person.checkedInAt)}</td>
-                  <td className="mono">
-                    {view === "active" ? (
-                      <span className="status-ok">{formatDuration(now - person.checkedInAt)}</span>
-                    ) : (
-                      <span>{person.checkedOutAt ? fmt(person.checkedOutAt) : "—"}</span>
-                    )}
-                  </td>
-                  {view === "active" && canManage && (
-                    <td className="no-print" style={{ textAlign: "right" }}>
-                      {checkoutKey === person.key ? (
-                        <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                          <input
-                            value={exitRemarks}
-                            onChange={e => setExitRemarks(e.target.value)}
-                            placeholder="Note"
-                            style={{ height: 28, width: 120, fontSize: 12 }}
-                          />
-                          <button
-                            type="button"
-                            className="pri"
-                            style={{ minHeight: 28, padding: "2px 10px", fontSize: 12 }}
-                            onClick={() => {
-                              recordGuestCheckOut({
-                                recordId: person.recordId,
-                                passcodeId: person.passcodeId,
-                                checkedOutBy: operatorName,
-                                checkoutNotes: exitRemarks.trim() || "Checked out",
-                                fallbackVisitor: {
-                                  visitorName: person.visitorName,
-                                  company: person.company,
-                                  kind: person.kind,
-                                  hostName: person.hostName,
-                                  deptName: person.deptName,
-                                  checkedInAt: person.checkedInAt,
-                                },
-                              });
-                              setCheckoutKey(null);
-                              setExitRemarks("");
-                            }}
-                          >
-                            Confirm
-                          </button>
-                          <button
-                            type="button"
-                            style={{ minHeight: 28, padding: "2px 8px", fontSize: 12 }}
-                            onClick={() => {
-                              setCheckoutKey(null);
-                              setExitRemarks("");
-                            }}
-                          >
-                            Cancel
-                          </button>
-                        </div>
+              {filtered.map(person => {
+                const isOverstayed = !person.checkedOutAt && !!person.expiresAt && person.expiresAt < now;
+                return (
+                  <tr key={person.key}>
+                    <td style={{ fontWeight: 600 }}>
+                      <div>{person.visitorName}</div>
+                      {person.phone && <div className="meta-inline mono">{person.phone}</div>}
+                    </td>
+                    <td>{person.company || <span className="status-mute">—</span>}</td>
+                    <td style={{ textTransform: "capitalize" }}>{person.kind}</td>
+                    <td style={{ fontWeight: 500 }}>{person.hostName}</td>
+                    <td>{person.deptName}</td>
+                    <td>
+                      <span className="mono" style={{ fontWeight: 600 }}>{person.badgeNumber}</span>
+                      <div className="meta-inline">
+                        {person.idType}
+                        {person.idNumber ? ` · ${person.idNumber}` : ""}
+                      </div>
+                    </td>
+                    <td className="mono">{person.vehiclePlate || <span className="status-mute">—</span>}</td>
+                    <td className="mono">{fmt(person.checkedInAt)}</td>
+                    <td className="mono">
+                      {view === "active" ? (
+                        <span className={isOverstayed ? "status-warn" : "status-ok"}>
+                          {formatDuration(now - person.checkedInAt)}
+                          {isOverstayed ? " · Overstayed" : ""}
+                        </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setCheckoutKey(person.key)}
-                          style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
-                        >
-                          <LogOut size={12} />
-                          <span>Check-Out</span>
-                        </button>
+                        <span>{person.checkedOutAt ? fmt(person.checkedOutAt) : "—"}</span>
                       )}
                     </td>
-                  )}
-                </tr>
-              ))}
+                    {view === "active" && canManage && (
+                      <td className="no-print" style={{ textAlign: "right" }}>
+                        {checkoutKey === person.key ? (
+                          <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                            <input
+                              value={exitRemarks}
+                              onChange={e => setExitRemarks(e.target.value)}
+                              placeholder="Note"
+                              style={{ height: 28, width: 120, fontSize: 12 }}
+                            />
+                            <button
+                              type="button"
+                              className="pri"
+                              style={{ minHeight: 28, padding: "2px 10px", fontSize: 12 }}
+                              onClick={() => {
+                                recordGuestCheckOut({
+                                  recordId: person.recordId,
+                                  passcodeId: person.passcodeId,
+                                  checkedOutBy: operatorName,
+                                  checkoutNotes: exitRemarks.trim() || "Checked out",
+                                  fallbackVisitor: {
+                                    visitorName: person.visitorName,
+                                    company: person.company,
+                                    kind: person.kind,
+                                    hostName: person.hostName,
+                                    deptName: person.deptName,
+                                    checkedInAt: person.checkedInAt,
+                                    expiresAt: person.expiresAt,
+                                  },
+                                });
+                                setCheckoutKey(null);
+                                setExitRemarks("");
+                              }}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              type="button"
+                              style={{ minHeight: 28, padding: "2px 8px", fontSize: 12 }}
+                              onClick={() => {
+                                setCheckoutKey(null);
+                                setExitRemarks("");
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setCheckoutKey(person.key)}
+                            style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
+                          >
+                            <LogOut size={12} />
+                            <span>Check-Out</span>
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -5,9 +5,10 @@ import type { Doc, Id } from "./_generated/dataModel";
 // Single source of truth for RBAC. Enforced server-side in every function.
 export const PERMS = {
   "passcode.issue": ["admin", "security", "staff"],
+  "passcode.read": ["admin", "security", "staff", "report"],
   "passcode.validate": ["admin", "security"],
-  "passcode.revoke": ["admin", "security"],
-  "passcode.list.all": ["admin", "security"],
+  "passcode.revoke": ["admin", "security", "staff"],
+  "passcode.list.all": ["admin", "security", "report"],
   "audit.read": ["admin", "security", "report"],
   "metrics.read": ["admin", "security", "report"],
   "users.manage": ["admin"],
@@ -22,25 +23,61 @@ export async function currentProfile(ctx: QueryCtx): Promise<Doc<"profiles"> | n
   if (!userId) return null;
   return ctx.db.query("profiles").withIndex("by_user", q => q.eq("userId", userId)).unique();
 }
-export const can = (p: Doc<"profiles"> | null, a: Action) => !!p && p.active !== false && (PERMS[a] as readonly string[]).includes(p.role);
+export const can = (p: Doc<"profiles"> | null, a: Action) =>
+  !!p && p.active !== false && (PERMS[a] as readonly string[]).includes(p.role);
 
-export async function writeAudit(ctx: MutationCtx, p: Doc<"profiles"> | null, action: string, ok: boolean, detail = "") {
-  await ctx.db.insert("audit", { userId: p?.userId, name: p?.name ?? "anonymous", action, detail, ok, at: Date.now() });
+export async function writeAudit(
+  ctx: MutationCtx,
+  p: Doc<"profiles"> | null,
+  action: string,
+  ok: boolean,
+  detail = ""
+) {
+  await ctx.db.insert("audit", {
+    userId: p?.userId,
+    name: p?.name ?? "anonymous",
+    action,
+    detail: detail.slice(0, 240),
+    ok,
+    at: Date.now(),
+  });
 }
+
 export async function notifyRoles(ctx: MutationCtx, roles: string[], kind: string, message: string) {
-  const all = await ctx.db.query("profiles").collect();
-  for (const p of all) if (p.active !== false && roles.includes(p.role)) await ctx.db.insert("notifications", { userId: p.userId, kind, message, at: Date.now(), read: false });
+  const all = await ctx.db.query("profiles").take(200);
+  const now = Date.now();
+  for (const p of all) {
+    if (p.active !== false && roles.includes(p.role)) {
+      await ctx.db.insert("notifications", {
+        userId: p.userId,
+        kind,
+        message: message.slice(0, 240),
+        at: now,
+        read: false,
+      });
+    }
+  }
 }
+
 export async function notifyUser(ctx: MutationCtx, userId: Id<"users">, kind: string, message: string) {
-  await ctx.db.insert("notifications", { userId, kind, message, at: Date.now(), read: false });
+  await ctx.db.insert("notifications", {
+    userId,
+    kind,
+    message: message.slice(0, 240),
+    at: Date.now(),
+    read: false,
+  });
 }
+
 // Mutation guard: logs denials (no throw, so the log commits). Alerts admins on denied admin-only actions.
 export async function authorize(ctx: MutationCtx, a: Action, detail = "") {
   const p = await currentProfile(ctx);
   const ok = can(p, a);
   if (!ok) {
     await writeAudit(ctx, p, a, false, detail);
-    if (SENSITIVE.includes(a)) await notifyRoles(ctx, ["admin"], "security", `${p?.name ?? "Unknown user"} was denied ${a}`);
+    if (SENSITIVE.includes(a)) {
+      await notifyRoles(ctx, ["admin"], "security", `${p?.name ?? "Unknown user"} was denied ${a}`);
+    }
   }
   return ok ? p! : null;
 }
