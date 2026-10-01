@@ -20,6 +20,7 @@ import {
   getAttachmentByName,
   getAttachmentByPasscodeId,
   getCsrfToken,
+  getEffectiveRole,
   getNextAvailableBadge,
   isProfileApproved,
   recordGateDenial,
@@ -186,13 +187,14 @@ export function useUnifiedOnSiteList() {
     // - admin & security: see all department logs
     // - report (Department Head): see ONLY their bound department's records
     // - staff: see ONLY records belonging to their bound department AND individually issued by them
+    const effectiveRole = getEffectiveRole(me);
     const rawList = Array.from(map.values()).sort((a, b) => b.checkedInAt - a.checkedInAt);
     const scopedList = rawList.filter(item => {
-      if (me.role === "admin" || me.role === "security") return true;
+      if (effectiveRole === "admin" || effectiveRole === "security") return true;
       const matchesMyDept =
         (myDeptId && item.hostDepartmentId === myDeptId) ||
         item.deptName.toLowerCase() === myDeptName.toLowerCase();
-      if (me.role === "report") {
+      if (effectiveRole === "report") {
         return matchesMyDept;
       }
       // staff: must match both their individual userId and their bound department
@@ -264,7 +266,8 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   };
 
   // RBAC Guard: Only Admin and Security can operate the Gate Check terminal
-  if (me && me.role !== "admin" && me.role !== "security") {
+  const effectiveRole = me ? getEffectiveRole(me) : "staff";
+  if (me && effectiveRole !== "admin" && effectiveRole !== "security") {
     return (
       <div className="panel">
         <p className="status-err">Access restricted to Security &amp; Administrators.</p>
@@ -570,6 +573,9 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         codeHash: pendingGuest.codeHash,
         deniedBy: operatorName,
         reason,
+        visitorName: pendingGuest.visitorName,
+        hostName: pendingGuest.hostName,
+        deptName: pendingGuest.deptName,
       });
       if (pendingGuest.passcodeId && !pendingGuest.alreadyValidatedOnServer) {
         try {
@@ -938,8 +944,8 @@ export function PersonsOnSite({
   canManage: boolean;
   canExport: boolean;
 }) {
-  const { activeOnSite, checkedOutHistory } = useUnifiedOnSiteList();
-  const [view, setView] = useState<"active" | "departed">("active");
+  const { activeOnSite, checkedOutHistory, all } = useUnifiedOnSiteList();
+  const [view, setView] = useState<"active" | "departed" | "all">("active");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | "visitor" | "contractor" | "supplier">("all");
   const [checkoutKey, setCheckoutKey] = useState<string | null>(null);
@@ -951,10 +957,10 @@ export function PersonsOnSite({
     return () => clearInterval(timer);
   }, []);
 
-  const sourceList = view === "active" ? activeOnSite : checkedOutHistory;
+  const sourceList = view === "active" ? activeOnSite : view === "departed" ? checkedOutHistory : all;
 
-  const filtered = useMemo(() => {
-    return sourceList.filter(p => {
+  const filterList = (list: UnifiedOnSitePerson[]) =>
+    list.filter(p => {
       if (kindFilter !== "all" && p.kind !== kindFilter) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
@@ -964,17 +970,22 @@ export function PersonsOnSite({
           p.hostName.toLowerCase().includes(q) ||
           p.deptName.toLowerCase().includes(q) ||
           p.badgeNumber.toLowerCase().includes(q) ||
-          (p.vehiclePlate ?? "").toLowerCase().includes(q);
+          (p.vehiclePlate ?? "").toLowerCase().includes(q) ||
+          (p.checkedOutBy ?? "").toLowerCase().includes(q) ||
+          (p.checkoutNotes ?? "").toLowerCase().includes(q);
         if (!match) return false;
       }
       return true;
     });
-  }, [sourceList, kindFilter, search]);
+
+  const filtered = useMemo(() => filterList(sourceList), [sourceList, kindFilter, search]);
 
   const exportRosterCsv = () => {
     if (!canExport || !verifyCsrfToken(getCsrfToken())) return;
+    // Always include checked-out records in the exported report unless specifically filtering only departed
+    const exportSource = view === "departed" ? filterList(checkedOutHistory) : filterList(all);
     downloadCsv(
-      `persons-on-site-${new Date().toISOString().slice(0, 10)}.csv`,
+      `gate-access-report-${new Date().toISOString().slice(0, 10)}.csv`,
       [
         "Name",
         "Company",
@@ -986,9 +997,11 @@ export function PersonsOnSite({
         "Vehicle",
         "Checked In",
         "Checked Out",
+        "Checked Out By",
+        "Checkout Notes",
         "Status",
       ],
-      filtered.map(p => {
+      exportSource.map(p => {
         const isOverstayed = !p.checkedOutAt && !!p.expiresAt && p.expiresAt < now;
         return [
           p.visitorName,
@@ -1001,6 +1014,8 @@ export function PersonsOnSite({
           p.vehiclePlate ?? "",
           new Date(p.checkedInAt).toISOString(),
           p.checkedOutAt ? new Date(p.checkedOutAt).toISOString() : "",
+          p.checkedOutBy ?? "",
+          p.checkoutNotes ?? "",
           p.checkedOutAt ? "Checked Out" : isOverstayed ? "Overstayed" : "On Site",
         ];
       })
@@ -1056,6 +1071,9 @@ export function PersonsOnSite({
               <button type="button" aria-pressed={view === "departed"} onClick={() => setView("departed")}>
                 Checked Out ({checkedOutHistory.length})
               </button>
+              <button type="button" aria-pressed={view === "all"} onClick={() => setView("all")}>
+                Full Ledger ({all.length})
+              </button>
             </div>
 
             <div className="search-box">
@@ -1090,8 +1108,8 @@ export function PersonsOnSite({
                 <th>Badge / ID</th>
                 <th>Vehicle</th>
                 <th>Checked In</th>
-                <th>{view === "active" ? "Duration" : "Checked Out"}</th>
-                {view === "active" && canManage && <th className="no-print" style={{ textAlign: "right" }}>Action</th>}
+                <th>{view === "active" ? "Duration" : "Checked Out / Status"}</th>
+                {view !== "departed" && canManage && <th className="no-print" style={{ textAlign: "right" }}>Action</th>}
               </tr>
             </thead>
             <tbody>
@@ -1117,18 +1135,28 @@ export function PersonsOnSite({
                     <td className="mono">{person.vehiclePlate || <span className="status-mute">—</span>}</td>
                     <td className="mono">{fmt(person.checkedInAt)}</td>
                     <td className="mono">
-                      {view === "active" ? (
+                      {!person.checkedOutAt ? (
                         <span className={isOverstayed ? "status-warn" : "status-ok"}>
-                          {formatDuration(now - person.checkedInAt)}
+                          On Site · {formatDuration(now - person.checkedInAt)}
                           {isOverstayed ? " · Overstayed" : ""}
                         </span>
                       ) : (
-                        <span>{person.checkedOutAt ? fmt(person.checkedOutAt) : "—"}</span>
+                        <div>
+                          <span>Out {fmt(person.checkedOutAt)}</span>
+                          {(person.checkedOutBy || person.checkoutNotes) && (
+                            <div className="meta-inline" style={{ fontFamily: "Inter, sans-serif" }}>
+                              {person.checkedOutBy ? `by ${person.checkedOutBy}` : ""}
+                              {person.checkoutNotes ? ` · ${person.checkoutNotes}` : ""}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </td>
-                    {view === "active" && canManage && (
+                    {view !== "departed" && canManage && (
                       <td className="no-print" style={{ textAlign: "right" }}>
-                        {checkoutKey === person.key ? (
+                        {person.checkedOutAt ? (
+                          <span className="meta-inline">Checked Out</span>
+                        ) : checkoutKey === person.key ? (
                           <div style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
                             <input
                               value={exitRemarks}
