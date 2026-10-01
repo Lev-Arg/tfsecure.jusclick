@@ -46,9 +46,7 @@ import {
 } from "./components/DocumentationAndPolicies";
 import {
   OfflineIndicator,
-  PWAInstallButton,
   PlatformInstallerAndSetupCenter,
-  PlatformInstallerModal,
 } from "./components/PlatformInstallerAndSetup";
 import {
   AVAILABLE_SOFTWARE_RELEASES,
@@ -196,7 +194,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [emailInput, setEmailInput] = useState("");
   const [policyAccepted, setPolicyAccepted] = useState(false);
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
-  const [setupModalOpen, setSetupModalOpen] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -323,8 +320,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         backgroundPosition: "center",
       }}
     >
-      <div className="auth-theme-floating" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <PWAInstallButton darkGlass onOpenSetupModal={() => setSetupModalOpen(true)} />
+      <div className="auth-theme-floating">
         <button
           type="button"
           onClick={onToggleTheme}
@@ -603,11 +599,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
             context: step === "signUp" ? "signup" : "pre_login",
           });
         }}
-      />
-      <PlatformInstallerModal
-        open={setupModalOpen}
-        onClose={() => setSetupModalOpen(false)}
-        actorEmail={emailInput.trim() || undefined}
       />
       <OfflineIndicator />
       <div style={{ height: 4 }} />
@@ -2944,13 +2935,13 @@ function Settings({
               Images &amp; Media
             </button>
             <button type="button" aria-pressed={section === "updates"} onClick={() => { setSection("updates"); setMsg(null); }}>
-              Software Update (v{registry.systemConfig.systemVersion})
+              Software Update
             </button>
             <button type="button" aria-pressed={section === "setup"} onClick={() => { setSection("setup"); setMsg(null); }}>
               Local Setup &amp; Apps
             </button>
             <button type="button" aria-pressed={section === "analytics"} onClick={() => { setSection("analytics"); setMsg(null); }}>
-              Live Analytics &amp; Policies
+              Analytics &amp; Policies
             </button>
             <button type="button" aria-pressed={section === "backup"} onClick={() => { setSection("backup"); setMsg(null); }}>
               Backup &amp; Restore
@@ -4090,7 +4081,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     "theme" | "images" | "updates" | "setup" | "analytics" | "backup"
   >("theme");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [setupModalOpen, setSetupModalOpen] = useState(false);
 
   useEffect(() => {
     if (me === null) ensure();
@@ -4374,7 +4364,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
           </div>
 
           <div className="topbar-zone-actions">
-            <PWAInstallButton compact onOpenSetupModal={() => setSetupModalOpen(true)} />
             <Bell />
             <button
               type="button"
@@ -4433,11 +4422,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
           </div>
         </main>
       </div>
-      <PlatformInstallerModal
-        open={setupModalOpen}
-        onClose={() => setSetupModalOpen(false)}
-        actorEmail={me.email}
-      />
       <OfflineIndicator />
     </div>
   );

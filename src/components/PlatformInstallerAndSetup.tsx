@@ -688,21 +688,21 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
             aria-pressed={activeView === "wizard"}
             onClick={() => setActiveView("wizard")}
           >
-            01. Interactive Local Host Setup Wizard
+            1. Local Host Setup Wizard
           </button>
           <button
             type="button"
             aria-pressed={activeView === "platforms"}
             onClick={() => setActiveView("platforms")}
           >
-            02. Install on Windows, iOS &amp; Android
+            2. Windows, iOS &amp; Android
           </button>
           <button
             type="button"
             aria-pressed={activeView === "compile"}
             onClick={() => setActiveView("compile")}
           >
-            03. Native Compilation (APK / IPA / EXE)
+            3. Native Compilation
           </button>
         </div>
       </section>
@@ -720,10 +720,10 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
             </div>
             <div className="segmented">
               {([
-                { step: 1, title: "1. Pre-Flight Check" },
+                { step: 1, title: "1. Pre-Flight" },
                 { step: 2, title: "2. Host Config" },
                 { step: 3, title: "3. LAN & Firewall" },
-                { step: 4, title: "4. Generate Setup File" },
+                { step: 4, title: "4. Setup Files" },
               ] as const).map((s) => (
                 <button
                   key={s.step}
