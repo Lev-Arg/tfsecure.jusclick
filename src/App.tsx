@@ -4,6 +4,7 @@ import { useAuthActions } from "@convex-dev/auth/react";
 import {
   Activity,
   Bell as BellIcon,
+  BookOpen,
   Building2,
   Check,
   Copy,
@@ -39,7 +40,13 @@ import type { Id } from "../convex/_generated/dataModel";
 import { CORPORATE_FACILITY_BG, DEFAULT_TF_LOGO, SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
 import { Gate, PersonsOnSite, useUnifiedOnSiteList } from "./components/GateAndOnSite";
 import {
+  DATA_PROTECTION_POLICY_CLAUSES,
+  Documentation,
+  PolicyAgreementModal,
+} from "./components/DocumentationAndPolicies";
+import {
   AVAILABLE_SOFTWARE_RELEASES,
+  CURRENT_POLICY_VERSION,
   applySoftwarePatchFileJson,
   applySoftwareUpdate,
   approveUserAccount,
@@ -52,6 +59,7 @@ import {
   getCsrfToken,
   getEffectiveRole,
   getMergedAuditLedger,
+  hasUserAcceptedPolicy,
   inviteUserAccount,
   isNotificationSoundMuted,
   isProfileApproved,
@@ -59,6 +67,8 @@ import {
   markEmailPendingApproval,
   optimizeImageFileToDataUrl,
   playNotificationDingDong,
+  recordPolicyAcceptance,
+  recordPolicyDeclineAttempt,
   registerIssuedPasscode,
   removeSystemImage,
   removeUserInvite,
@@ -91,6 +101,7 @@ const TABS: Record<string, string[]> = {
   Departments: ["admin"],
   Users: ["admin"],
   Settings: ["admin"],
+  Documentation: ["admin", "security", "report", "staff"],
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -171,6 +182,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const registry = useGateRegistry();
   const [step, setStep] = useState<"signIn" | "signUp" | "forgot" | { verify: string } | { reset: string }>("signIn");
   const [emailInput, setEmailInput] = useState("");
+  const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [policyModalOpen, setPolicyModalOpen] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -203,6 +216,13 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       return;
     }
 
+    // Mandatory Data Protection (Act 843) & Security Policy agreement before Sign In or Sign Up
+    if ((step === "signIn" || step === "signUp") && !policyAccepted) {
+      recordPolicyDeclineAttempt(email || emailInput, step);
+      setErr("You must review and agree to the Data Protection & Security Policy before login.");
+      return;
+    }
+
     // Block login only if a System Admin already exists, this email is not invited, and it is pending approval
     const isBootstrapOrInvited =
       !registry.bootstrapAdminEmail ||
@@ -222,6 +242,12 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
     setBusy(true);
     try {
       if (step === "signIn" || step === "signUp") {
+        // Log the mandatory Data Protection & Security Policy agreement to the Audit Ledger
+        recordPolicyAcceptance({
+          email,
+          name: rawName || email.split("@")[0],
+          context: step === "signUp" ? "signup" : "pre_login",
+        });
         if (step === "signUp") {
           markEmailPendingApproval(email);
           fd.set("name", rawName);
@@ -427,6 +453,66 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                 </div>
               )}
 
+              {(step === "signIn" || step === "signUp") && (
+                <div
+                  style={{
+                    padding: "9px 10px",
+                    borderRadius: 6,
+                    background: "var(--surface-subtle)",
+                    border: "1px solid var(--line)",
+                    fontSize: 12,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      cursor: "pointer",
+                      lineHeight: 1.4,
+                      color: "var(--ink)",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={policyAccepted}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setPolicyAccepted(checked);
+                        if (checked && emailInput.trim()) {
+                          recordPolicyAcceptance({
+                            email: emailInput.trim(),
+                            context: step === "signUp" ? "signup" : "pre_login",
+                          });
+                        }
+                      }}
+                      style={{ width: 15, height: 15, marginTop: 2, flexShrink: 0 }}
+                    />
+                    <span>
+                      I agree to the <strong>Data Protection (Act 843) &amp; Security Policy</strong>. I understand this
+                      acceptance and all gate/access actions are logged.
+                    </span>
+                  </label>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingLeft: 23 }}>
+                    <span className="mono status-mute" style={{ fontSize: 10.5 }}>
+                      Policy {CURRENT_POLICY_VERSION}
+                    </span>
+                    <button
+                      type="button"
+                      className="ghost-btn"
+                      style={{ minHeight: "auto", padding: "1px 6px", fontSize: 11.5, color: "var(--sig)" }}
+                      onClick={() => setPolicyModalOpen(true)}
+                    >
+                      <BookOpen size={12} />
+                      <span>Read Policy &amp; Architecture</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {info && (
                 <div className="gate-banner granted" style={{ marginTop: 0, padding: "8px 10px", fontSize: 12 }}>
                   {info}
@@ -491,6 +577,19 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           </main>
         </div>
       </div>
+      <PolicyAgreementModal
+        open={policyModalOpen}
+        onClose={() => setPolicyModalOpen(false)}
+        userEmail={emailInput.trim() || undefined}
+        onAccept={() => {
+          setPolicyAccepted(true);
+          setErr("");
+          recordPolicyAcceptance({
+            email: emailInput.trim() || "pre-auth-operator@tfcommodities.com",
+            context: step === "signUp" ? "signup" : "pre_login",
+          });
+        }}
+      />
       <div style={{ height: 4 }} />
     </div>
   );
@@ -3888,6 +3987,7 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   Departments: <Building2 size={16} />,
   Users: <UsersIcon size={16} />,
   Settings: <SettingsIcon size={16} />,
+  Documentation: <BookOpen size={16} />,
 };
 
 function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
@@ -3966,6 +4066,96 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
                 <LogOut size={15} />
                 <span>Return to Sign In</span>
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Security Control: Ensure authenticated user has agreed to the Data Protection & Security Policy (logged)
+  const acceptedPolicy = hasUserAcceptedPolicy(me.email, me.userId);
+  if (!acceptedPolicy) {
+    return (
+      <div
+        className="auth-shell"
+        style={{
+          backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.34) 50%, rgba(7, 11, 18, 0.64) 100%), url("${loginBgUrl}")`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+        }}
+      >
+        <div className="auth-main-stage">
+          <div className="auth-form-pane" style={{ borderRadius: 14, maxWidth: 640, width: "100%" }}>
+            <div className="auth-card" style={{ maxWidth: 600 }}>
+              <div className="auth-card-logo-bar">
+                <span className="header-app-title" style={{ fontSize: 20 }}>
+                  TFSECURE
+                </span>
+              </div>
+              <div className="auth-card-header">
+                <h1>Data Protection &amp; Security Policy Agreement</h1>
+                <p className="status-mute" style={{ fontSize: 12, marginTop: 4 }}>
+                  Mandatory Compliance Gate ({CURRENT_POLICY_VERSION}) · Ghana Data Protection Act, 2012 (Act 843)
+                </p>
+              </div>
+              <div
+                style={{
+                  maxHeight: 260,
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  paddingRight: 4,
+                }}
+              >
+                {DATA_PROTECTION_POLICY_CLAUSES.map(c => (
+                  <div
+                    key={c.code}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      background: "var(--surface-subtle)",
+                      border: "1px solid var(--line)",
+                      fontSize: 12,
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 2 }}>
+                      [{c.code}] {c.title}
+                    </strong>
+                    <span style={{ color: "var(--ink-secondary)" }}>{c.body}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    recordPolicyDeclineAttempt(me.email, "workspace_gate");
+                    signOut();
+                  }}
+                  style={{ flex: 1, height: 40 }}
+                >
+                  <LogOut size={15} />
+                  <span>Decline &amp; Sign Out</span>
+                </button>
+                <button
+                  type="button"
+                  className="pri"
+                  onClick={() => {
+                    recordPolicyAcceptance({
+                      email: me.email,
+                      name: me.name,
+                      userId: me.userId,
+                      context: "workspace_gate",
+                    });
+                  }}
+                  style={{ flex: 2, height: 40 }}
+                >
+                  <Check size={15} />
+                  <span>I Agree &amp; Enter Workspace (Logged)</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -4148,6 +4338,9 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
                 meName={me.name}
                 initialSection={settingsInitialSection}
               />
+            )}
+            {active === "Documentation" && (
+              <Documentation me={meWithEffectiveRole} role={effectiveRole} />
             )}
           </div>
         </main>

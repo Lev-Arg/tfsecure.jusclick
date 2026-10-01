@@ -276,6 +276,25 @@ export type LocalNotificationEntry = {
   targetUserId?: string;
 };
 
+export const CURRENT_POLICY_VERSION = "Act843-v2.5";
+
+export type PolicyAcceptanceRecord = {
+  key: string;
+  email: string;
+  name: string;
+  policyVersion: string;
+  acceptedAt: number;
+  context: "pre_login" | "signup" | "workspace_gate";
+};
+
+export type PilotScenarioCheckRecord = {
+  scenarioId: string;
+  verified: boolean;
+  verifiedBy: string;
+  verifiedAt: number;
+  notes?: string;
+};
+
 export type InvitedUserRecord = {
   email: string;
   name: string;
@@ -434,6 +453,8 @@ type RegistryState = {
   invitedUsers: Record<string, InvitedUserRecord>;
   pendingApprovalEmails: Record<string, number>;
   approvedUserKeys: Record<string, number>;
+  policyAcceptances: Record<string, PolicyAcceptanceRecord>;
+  pilotScenarioChecks: Record<string, PilotScenarioCheckRecord>;
   localAuditEntries: LocalAuditEntry[];
   localNotifications: LocalNotificationEntry[];
   systemConfig: SystemConfig;
@@ -482,6 +503,8 @@ function loadRegistry(): RegistryState {
         invitedUsers: parsed.invitedUsers ?? {},
         pendingApprovalEmails: parsed.pendingApprovalEmails ?? {},
         approvedUserKeys: parsed.approvedUserKeys ?? {},
+        policyAcceptances: parsed.policyAcceptances ?? {},
+        pilotScenarioChecks: parsed.pilotScenarioChecks ?? {},
         localAuditEntries: parsed.localAuditEntries ?? [],
         localNotifications: parsed.localNotifications ?? [],
         systemConfig: {
@@ -516,6 +539,8 @@ function loadRegistry(): RegistryState {
     invitedUsers: {},
     pendingApprovalEmails: {},
     approvedUserKeys: {},
+    policyAcceptances: {},
+    pilotScenarioChecks: {},
     localAuditEntries: [],
     localNotifications: [],
     systemConfig: {
@@ -1252,6 +1277,121 @@ export function exportSystemBackupJson(actorName = "System Admin", extraMetadata
   playNotificationDingDong();
 }
 
+export function recordPolicyAcceptance(params: {
+  email: string;
+  name?: string;
+  userId?: string;
+  context: "pre_login" | "signup" | "workspace_gate";
+}): PolicyAcceptanceRecord {
+  const now = Date.now();
+  const cleanEmail = sanitizeText(params.email, 120).toLowerCase() || "operator@tfcommodities.com";
+  const cleanName = sanitizeText(params.name, 80) || cleanEmail.split("@")[0] || "Operator";
+  const record: PolicyAcceptanceRecord = {
+    key: cleanEmail,
+    email: cleanEmail,
+    name: cleanName,
+    policyVersion: CURRENT_POLICY_VERSION,
+    acceptedAt: now,
+    context: params.context,
+  };
+
+  const nextAcceptances: Record<string, PolicyAcceptanceRecord> = {
+    ...state.policyAcceptances,
+    [cleanEmail]: record,
+    __latest_session__: record,
+  };
+  if (params.userId) {
+    nextAcceptances[params.userId] = record;
+  }
+
+  const contextLabel =
+    params.context === "pre_login"
+      ? "prior to sign-in"
+      : params.context === "signup"
+      ? "during account registration"
+      : "at workspace security gate";
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_policy_accept_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    name: `${cleanName} (${cleanEmail})`,
+    action: "policy.accept",
+    detail: `Agreed to Data Protection (Ghana Act 843) & Security Policy [${CURRENT_POLICY_VERSION}] ${contextLabel}`,
+    ok: true,
+    at: now,
+  };
+
+  state = {
+    ...state,
+    policyAcceptances: nextAcceptances,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+  return record;
+}
+
+export function recordPolicyDeclineAttempt(email: string, flow: string) {
+  const now = Date.now();
+  const cleanEmail = sanitizeText(email, 120).toLowerCase() || "unauthenticated-user";
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_policy_decline_${now}`,
+    name: cleanEmail,
+    action: "policy.decline",
+    detail: `Blocked ${flow} attempt: user did not agree to Data Protection & Security Policy [${CURRENT_POLICY_VERSION}]`,
+    ok: false,
+    at: now,
+  };
+  state = {
+    ...state,
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+}
+
+export function hasUserAcceptedPolicy(email?: string, userId?: string): boolean {
+  const cleanEmail = (email ?? "").trim().toLowerCase();
+  if (cleanEmail && state.policyAcceptances[cleanEmail]?.policyVersion === CURRENT_POLICY_VERSION) {
+    return true;
+  }
+  if (userId && state.policyAcceptances[userId]?.policyVersion === CURRENT_POLICY_VERSION) {
+    return true;
+  }
+  return false;
+}
+
+export function togglePilotScenarioCheck(
+  scenarioId: string,
+  actorName = "System Admin",
+  notes?: string
+) {
+  const now = Date.now();
+  const current = state.pilotScenarioChecks[scenarioId];
+  const nextVerified = !current?.verified;
+  const record: PilotScenarioCheckRecord = {
+    scenarioId,
+    verified: nextVerified,
+    verifiedBy: sanitizeText(actorName, 80) || "Evaluator",
+    verifiedAt: now,
+    notes: sanitizeText(notes, 160) || current?.notes,
+  };
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_pilot_${scenarioId}_${now}`,
+    name: record.verifiedBy,
+    action: "pilot.evaluate",
+    detail: `${nextVerified ? "Verified" : "Reset"} pilot evaluation scenario #${scenarioId}`,
+    ok: true,
+    at: now,
+  };
+  state = {
+    ...state,
+    pilotScenarioChecks: {
+      ...state.pilotScenarioChecks,
+      [scenarioId]: record,
+    },
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+}
+
 export function restoreSystemBackupJson(
   rawJson: string,
   actorName = "System Admin"
@@ -1292,6 +1432,8 @@ export function restoreSystemBackupJson(
       invitedUsers: source.invitedUsers ?? state.invitedUsers,
       pendingApprovalEmails: source.pendingApprovalEmails ?? state.pendingApprovalEmails,
       approvedUserKeys: source.approvedUserKeys ?? state.approvedUserKeys,
+      policyAcceptances: source.policyAcceptances ?? state.policyAcceptances,
+      pilotScenarioChecks: source.pilotScenarioChecks ?? state.pilotScenarioChecks,
       localAuditEntries: [restoreAudit, ...restoredAudits].slice(0, 300),
       localNotifications: Array.isArray(source.localNotifications) ? source.localNotifications : state.localNotifications,
       systemConfig: {
