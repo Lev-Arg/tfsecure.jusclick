@@ -41,9 +41,19 @@ export function usePWAInstall() {
     else setPlatform("linux");
 
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.getRegistration().then((reg) => {
-        if (reg) setSwRegistered(true);
-      }).catch(() => {});
+      navigator.serviceWorker
+        .register("/sw.js", { scope: "/" })
+        .then((reg) => {
+          if (reg) setSwRegistered(true);
+        })
+        .catch(() => {
+          navigator.serviceWorker
+            .getRegistration()
+            .then((reg) => {
+              if (reg) setSwRegistered(true);
+            })
+            .catch(() => {});
+        });
     }
 
     const handleBeforeInstallPrompt = (e: Event) => {

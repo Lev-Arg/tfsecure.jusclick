@@ -1,0 +1,63 @@
+{
+  "id": "/",
+  "name": "TFsecure — Security Operations & Gate Access Control",
+  "short_name": "TFsecure",
+  "description": "Role-based security operations and gate access management system with single-use visitor passcodes, brute-force lockout protection, and real-time audit logging.",
+  "theme_color": "#1b3b2b",
+  "background_color": "#0e1712",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "start_url": "/",
+  "scope": "/",
+  "categories": ["security", "business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Gate Check Terminal",
+      "short_name": "Gate Check",
+      "description": "Verify visitor passcodes and record entry/exit at the checkpoint",
+      "url": "/?tab=Gate%20check",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Issue Visitor Passcode",
+      "short_name": "Passcodes",
+      "description": "Generate a single-use visitor authorization code",
+      "url": "/?tab=Passcodes",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Persons On Site",
+      "short_name": "On Site",
+      "description": "Live evacuation & occupancy roll-call roster",
+      "url": "/?tab=Persons%20on%20site",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
