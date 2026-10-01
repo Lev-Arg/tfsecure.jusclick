@@ -38,3 +38,7 @@ deactivate), branding and validity settings, full audit log of allowed and denie
 - Add automated tests (convex-test) for convex/lib.ts permissions and the passcode lifecycle.
 - Have your IT manager review the lockout policy: it is global by design, so an attacker can lock the gate for 10 minutes (safer than guessing, but a nuisance).
 - Set AUTH_RESEND_KEY in production so unverified emails cannot sign up.
+
+
+### UPDATE THE LOCAL REPO 
+git pull origin main
