@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { CORPORATE_FACILITY_BG, SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
+import { SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
 import { Gate, PersonsOnSite, useUnifiedOnSiteList } from "./components/GateAndOnSite";
 import {
   downloadCsv,
@@ -186,50 +186,29 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
     <div
       className="auth-shell"
       style={{
-        backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.34) 50%, rgba(7, 11, 18, 0.58) 100%), url("${CORPORATE_FACILITY_BG}")`,
+        backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.34) 50%, rgba(7, 11, 18, 0.64) 100%), url("${SECURITY_CHECKPOINT_IMG}")`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
     >
-      {/* TOP BAR: System Title on Left, Organization Identity + Theme on Right */}
-      <header className="auth-header-bar">
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ShieldCheck size={20} style={{ color: "var(--sig)" }} />
-          <div className="system-title-group">
-            <span className="header-app-title" style={{ color: "#ffffff", fontSize: 18 }}>
-              TFSECURE
-            </span>
-            <span className="system-title-kicker" style={{ color: "#cbd5e1" }}>
-              Gate Access & Security System
-            </span>
-          </div>
-        </div>
+      <div className="auth-theme-floating">
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          aria-label="Toggle color theme"
+          style={{ background: "rgba(15,23,42,0.75)", color: "#f8fafc", borderColor: "rgba(255,255,255,0.2)" }}
+        >
+          {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+          <span>{theme === "dark" ? "Light" : "Dark"}</span>
+        </button>
+      </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <TfLogo size="sm" lightText />
-          <button
-            type="button"
-            onClick={onToggleTheme}
-            aria-label="Toggle color theme"
-            style={{ background: "rgba(15,23,42,0.75)", color: "#f8fafc", borderColor: "rgba(255,255,255,0.2)" }}
-          >
-            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-            <span>{theme === "dark" ? "Light" : "Dark"}</span>
-          </button>
-        </div>
-      </header>
-
-      {/* CENTER PORTAL: Checkpoint Showcase on Left, System Login on Right */}
+      {/* CENTER PORTAL: Organization Logo Showcase on Left (or Top Logo zone on Mobile), System Login on Right */}
       <div className="auth-main-stage">
         <div className="auth-portal-frame">
-          <aside
-            className="auth-checkpoint-panel"
-            style={{
-              backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.06) 45%, rgba(7, 11, 18, 0.78) 100%), url("${SECURITY_CHECKPOINT_IMG}")`,
-            }}
-          >
+          <aside className="auth-checkpoint-panel">
             <div className="auth-org-badge">
-              <TfLogo size="md" lightText />
+              <TfLogo size="lg" lightText />
             </div>
 
             <div className="auth-showcase-bottom">
@@ -247,7 +226,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                     TFSECURE
                   </span>
                 </div>
-                <TfLogo size="sm" />
               </div>
 
               <div className="auth-card-header">
@@ -2057,9 +2035,9 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     <div className="app-layout">
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`} aria-label="Workspace navigation">
         <div>
-          {/* ORGANIZATION LOGO SLOT (TF Commodities) */}
-          <div className="sidebar-brand" style={{ justifyContent: mobileNavOpen ? "space-between" : "center" }}>
-            <TfLogo size="md" />
+          {/* SYSTEM TITLE IN SIDEBAR */}
+          <div className="sidebar-brand">
+            <span className="header-app-title">TFSECURE</span>
             {mobileNavOpen && (
               <button
                 type="button"
@@ -2121,7 +2099,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
       <div className="main-column">
         <header className="topbar">
-          {/* SYSTEM HEADER TITLE (TFSECURE) */}
           <div className="topbar-zone-brand">
             <button
               type="button"
@@ -2131,32 +2108,18 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             >
               <Menu size={18} />
             </button>
-            <ShieldCheck size={18} style={{ color: "var(--sig)", flexShrink: 0 }} />
-            <div className="system-title-group">
-              <span className="header-app-title">TFSECURE</span>
-              <span className="system-title-kicker">Gate Access & Security System</span>
-            </div>
+            <TfLogo size="sm" />
           </div>
-
-          <nav className="topbar-zone-nav" aria-label="Primary sections">
-            {tabs.slice(0, 5).map(t => (
-              <button
-                key={t}
-                type="button"
-                className="topbar-link"
-                aria-selected={t === active}
-                onClick={() => selectTab(t)}
-              >
-                {t}
-                {t === "Persons on site" && activeOnSite.length > 0 ? ` (${activeOnSite.length})` : ""}
-              </button>
-            ))}
-          </nav>
 
           <div className="topbar-zone-actions">
             <Bell />
-            <button type="button" onClick={() => signOut()}>
-              <span>Sign out</span>
+            <button
+              type="button"
+              onClick={() => signOut()}
+              aria-label="Sign out"
+              title="Sign out"
+            >
+              <LogOut size={15} />
             </button>
           </div>
         </header>
