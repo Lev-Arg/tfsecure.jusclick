@@ -45,21 +45,33 @@ import {
   PolicyAgreementModal,
 } from "./components/DocumentationAndPolicies";
 import {
+  OfflineIndicator,
+  PWAInstallButton,
+  PlatformInstallerAndSetupCenter,
+  PlatformInstallerModal,
+} from "./components/PlatformInstallerAndSetup";
+import {
   AVAILABLE_SOFTWARE_RELEASES,
   CURRENT_POLICY_VERSION,
   applySoftwarePatchFileJson,
   applySoftwareUpdate,
   approveUserAccount,
   checkForSoftwareUpdates,
+  checkHostedSoftwareUpdates,
+  compareSoftwareVersions,
   downloadCsv,
   ensureFirstAccountAndInvites,
+  executeHostedSoftwareUpgrade,
+  exportSignedSoftwarePatchJson,
   exportSystemBackupJson,
   getAttachmentByName,
   getAttachmentByPasscodeId,
   getCsrfToken,
+  getDynamicReleaseCatalog,
   getEffectiveRole,
   getMergedAuditLedger,
   hasUserAcceptedPolicy,
+  incrementPatchVersion,
   inviteUserAccount,
   isNotificationSoundMuted,
   isProfileApproved,
@@ -184,6 +196,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [emailInput, setEmailInput] = useState("");
   const [policyAccepted, setPolicyAccepted] = useState(false);
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
+  const [setupModalOpen, setSetupModalOpen] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -310,7 +323,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         backgroundPosition: "center",
       }}
     >
-      <div className="auth-theme-floating">
+      <div className="auth-theme-floating" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <PWAInstallButton darkGlass onOpenSetupModal={() => setSetupModalOpen(true)} />
         <button
           type="button"
           onClick={onToggleTheme}
@@ -590,6 +604,12 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           });
         }}
       />
+      <PlatformInstallerModal
+        open={setupModalOpen}
+        onClose={() => setSetupModalOpen(false)}
+        actorEmail={emailInput.trim() || undefined}
+      />
+      <OfflineIndicator />
       <div style={{ height: 4 }} />
     </div>
   );
@@ -1002,6 +1022,10 @@ function Dashboard({
               <button type="button" onClick={exportAnalyticsCsv}>
                 <Download size={14} />
                 <span>Export Telemetry</span>
+              </button>
+              <button type="button" onClick={() => onNavigate("Settings:setup")}>
+                <Download size={14} />
+                <span>Local Setup &amp; Apps (iOS / Android / Windows)</span>
               </button>
               <button type="button" className="pri" onClick={() => onNavigate("Settings:updates")}>
                 <RefreshCw size={14} />
@@ -2507,7 +2531,7 @@ function Settings({
   theme: "light" | "dark";
   onToggleTheme: () => void;
   meName: string;
-  initialSection?: "theme" | "images" | "updates" | "analytics" | "backup";
+  initialSection?: "theme" | "images" | "updates" | "setup" | "analytics" | "backup";
 }) {
   const s = useBranding();
   const save = useMutation(api.settings.update);
@@ -2515,7 +2539,7 @@ function Settings({
   const registry = useGateRegistry();
   const { activeOnSite, checkedOutHistory } = useUnifiedOnSiteList();
 
-  const [section, setSection] = useState<"theme" | "images" | "updates" | "analytics" | "backup">(initialSection);
+  const [section, setSection] = useState<"theme" | "images" | "updates" | "setup" | "analytics" | "backup">(initialSection);
   const [f, setF] = useState<{ orgName: string; accent: string; defaultHours: number; maxHours: number } | null>(null);
   const [bannerTitleInput, setBannerTitleInput] = useState(registry.systemConfig.bannerTitle);
   const [logoUrlInput, setLogoUrlInput] = useState(registry.systemConfig.customLogoUrl ?? "");
@@ -2533,19 +2557,34 @@ function Settings({
   const [releaseChannelInput, setReleaseChannelInput] = useState<SystemConfig["releaseChannel"]>(
     registry.systemConfig.releaseChannel
   );
-  const [selectedTargetVersion, setSelectedTargetVersion] = useState<string>(
-    AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
+  const dynamicReleases = useMemo(
+    () => getDynamicReleaseCatalog(registry.systemConfig),
+    [registry.systemConfig]
   );
+  const nextUpgradeTarget = useMemo(() => {
+    const newer = dynamicReleases.filter(
+      r => compareSoftwareVersions(r.version, registry.systemConfig.systemVersion) > 0
+    );
+    return newer.length > 0
+      ? newer[newer.length - 1].version
+      : incrementPatchVersion(registry.systemConfig.systemVersion);
+  }, [dynamicReleases, registry.systemConfig.systemVersion]);
+
+  const [selectedTargetVersion, setSelectedTargetVersion] = useState<string>(nextUpgradeTarget);
   const [gitBranchInput, setGitBranchInput] = useState<string>(registry.systemConfig.gitBranch || "main");
   const [customUpdateSummary, setCustomUpdateSummary] = useState<string>("");
   const [updateConsoleLines, setUpdateConsoleLines] = useState<string[]>([
     `[SYSTEM] TFsecure Runtime v${registry.systemConfig.systemVersion} (${registry.systemConfig.buildCommit || "b4e82a9"}) ready.`,
-    `[REPO] Tracking ${registry.systemConfig.gitRemoteUrl || "origin/main"} on branch '${registry.systemConfig.gitBranch || "main"}'.`,
+    `[HOST] Zero-Downtime Hosted OTA & Repository Sync Engine active (branch '${registry.systemConfig.gitBranch || "main"}').`,
   ]);
   const [updatingSoftware, setUpdatingSoftware] = useState(false);
   const [copiedCli, setCopiedCli] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setSelectedTargetVersion(nextUpgradeTarget);
+  }, [nextUpgradeTarget]);
 
   useEffect(() => {
     setSection(initialSection);
@@ -2713,124 +2752,122 @@ function Settings({
     setMsg({ ok: true, text: "System images and background media saved." });
   };
 
-  const handleSavePoliciesAndUpdate = () => {
+  const handleSavePoliciesAndUpdate = async () => {
     if (!verifyCsrfToken(getCsrfToken())) return;
-    updateSystemConfig(
-      {
-        siteCapacityLimit: Math.max(10, Math.min(5000, Number(capacityInput) || 100)),
-        requireAdminApproval: requireApprovalInput,
-        autoFlagOverstays: autoOverstayInput,
-        releaseChannel: releaseChannelInput,
-      },
-      meName,
-      `Updated production policies (capacity: ${capacityInput}, approvalGate: ${requireApprovalInput})`
-    );
-    const updated = runSystemUpdateCheck(meName, releaseChannelInput);
-    setMsg({
-      ok: true,
-      text: `System policies saved and runtime updated to v${updated.systemVersion} (${updated.releaseChannel} channel).`,
-    });
-  };
-
-  const handleCheckSoftwareUpdates = () => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    const res = checkForSoftwareUpdates(meName, releaseChannelInput);
-    const ts = new Date().toLocaleTimeString();
-    if (res.hasUpdate) {
-      setSelectedTargetVersion(res.latestRelease.version);
-      setUpdateConsoleLines(prev => [
-        ...prev,
-        `[${ts}] $ check-updates --channel="${releaseChannelInput}"`,
-        `[${ts}] Update available: v${res.currentVersion} -> v${res.latestRelease.version} (${res.latestRelease.commitHash})`,
-        `[${ts}] Release summary: ${res.latestRelease.summary}`,
-      ]);
-      setMsg({
-        ok: true,
-        text: `New software release available: v${res.latestRelease.version} — ${res.latestRelease.summary}`,
+    setUpdatingSoftware(true);
+    try {
+      updateSystemConfig(
+        {
+          siteCapacityLimit: Math.max(10, Math.min(5000, Number(capacityInput) || 100)),
+          requireAdminApproval: requireApprovalInput,
+          autoFlagOverstays: autoOverstayInput,
+          releaseChannel: releaseChannelInput,
+        },
+        meName,
+        `Updated production policies (capacity: ${capacityInput}, approvalGate: ${requireApprovalInput})`
+      );
+      const res = await executeHostedSoftwareUpgrade({
+        actorName: meName,
+        targetChannel: releaseChannelInput,
+        source: "release_upgrade",
       });
-    } else {
-      setUpdateConsoleLines(prev => [
-        ...prev,
-        `[${ts}] $ check-updates --channel="${releaseChannelInput}"`,
-        `[${ts}] System is on release v${res.currentVersion}. You can still pull latest commits via 'git pull origin ${gitBranchInput || "main"}'.`,
-      ]);
+      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
       setMsg({
-        ok: true,
-        text: `Checked for updates on ${releaseChannelInput} channel: running v${res.currentVersion}.`,
+        ok: res.ok,
+        text: res.ok
+          ? `System policies saved and runtime upgraded to v${res.config.systemVersion} (${res.config.releaseChannel} channel).`
+          : res.error ?? "System update encountered an issue.",
       });
+    } finally {
+      setUpdatingSoftware(false);
     }
   };
 
-  const handleGitPullUpdate = () => {
+  const handleCheckSoftwareUpdates = async () => {
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    setUpdatingSoftware(true);
+    setMsg(null);
+    try {
+      const res = await checkHostedSoftwareUpdates(meName, releaseChannelInput);
+      setSelectedTargetVersion(res.nextUpgradeVersion);
+      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
+      if (res.hasUpdate) {
+        setMsg({
+          ok: true,
+          text: `Update available on ${releaseChannelInput} channel: v${res.currentVersion} → v${res.latestRelease.version} (${res.latestRelease.summary})`,
+        });
+      } else {
+        setMsg({
+          ok: true,
+          text: `Verified hosted manifest (/version.json) & Service Worker: running v${res.currentVersion}. Next OTA build v${res.nextUpgradeVersion} is ready to install.`,
+        });
+      }
+    } finally {
+      setUpdatingSoftware(false);
+    }
+  };
+
+  const handleGitPullUpdate = async () => {
     if (!verifyCsrfToken(getCsrfToken())) return;
     setUpdatingSoftware(true);
     setMsg(null);
     const branch = sanitizeText(gitBranchInput, 40) || "main";
-    const ts = new Date().toLocaleTimeString();
-    setUpdateConsoleLines(prev => [
-      ...prev,
-      `[${ts}] $ git pull origin ${branch}`,
-      `[${ts}] Fetching objects from origin/${branch}…`,
-      `[${ts}] Running pre-flight schema & RBAC integrity verification…`,
-    ]);
-
-    setTimeout(() => {
-      const { config, record } = applySoftwareUpdate({
+    try {
+      const res = await executeHostedSoftwareUpgrade({
         actorName: meName,
         targetChannel: releaseChannelInput,
         source: "repo_pull",
         gitBranch: branch,
         customSummary:
-          customUpdateSummary.trim() || `Synchronized local repository via git pull origin ${branch}`,
+          customUpdateSummary.trim() ||
+          `Synchronized release branch (origin/${branch}) & applied Hosted OTA upgrade`,
       });
-      const tsDone = new Date().toLocaleTimeString();
-      setUpdateConsoleLines(prev => [
-        ...prev,
-        `[${tsDone}] Fast-forward merged origin/${branch} -> commit ${record.commitHash}`,
-        `[${tsDone}] Built & hot-reloaded runtime modules -> v${config.systemVersion} (${config.releaseChannel})`,
-      ]);
-      setSelectedTargetVersion(config.systemVersion);
+      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
       setCustomUpdateSummary("");
+      if (res.ok && res.record) {
+        setMsg({
+          ok: true,
+          text: `System synchronized (origin/${branch}) and upgraded to v${res.config.systemVersion} [${res.record.commitHash}] on ${res.config.releaseChannel} channel.`,
+        });
+      } else {
+        setMsg({
+          ok: false,
+          text: res.error ?? "Update failed and restored pre-upgrade snapshot.",
+        });
+      }
+    } finally {
       setUpdatingSoftware(false);
-      setMsg({
-        ok: true,
-        text: `Repository updated (git pull origin ${branch}) and software upgraded to v${config.systemVersion} [${record.commitHash}].`,
-      });
-    }, 380);
+    }
   };
 
-  const handleInstallSelectedRelease = () => {
+  const handleInstallSelectedRelease = async () => {
     if (!verifyCsrfToken(getCsrfToken())) return;
     setUpdatingSoftware(true);
     setMsg(null);
-    const ts = new Date().toLocaleTimeString();
-    setUpdateConsoleLines(prev => [
-      ...prev,
-      `[${ts}] $ tfsecure-update --install v${selectedTargetVersion} --channel="${releaseChannelInput}"`,
-      `[${ts}] Creating pre-update state snapshot and verifying SHA-256 package signature…`,
-    ]);
-
-    setTimeout(() => {
-      const { config, record } = applySoftwareUpdate({
+    try {
+      const res = await executeHostedSoftwareUpgrade({
         actorName: meName,
         targetVersion: selectedTargetVersion,
         targetChannel: releaseChannelInput,
         source: "release_upgrade",
         customSummary: customUpdateSummary.trim() || undefined,
       });
-      const tsDone = new Date().toLocaleTimeString();
-      setUpdateConsoleLines(prev => [
-        ...prev,
-        `[${tsDone}] Installed release v${config.systemVersion} (commit ${record.commitHash}) on ${config.releaseChannel} channel.`,
-      ]);
-      setSelectedTargetVersion(config.systemVersion);
+      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
       setCustomUpdateSummary("");
+      if (res.ok && res.record) {
+        setMsg({
+          ok: true,
+          text: `Software upgraded to v${res.config.systemVersion} (commit ${res.record.commitHash}) on ${res.config.releaseChannel} channel.`,
+        });
+      } else {
+        setMsg({
+          ok: false,
+          text: res.error ?? "Upgrade failed and restored pre-upgrade snapshot.",
+        });
+      }
+    } finally {
       setUpdatingSoftware(false);
-      setMsg({
-        ok: true,
-        text: `Software updated to v${config.systemVersion} (${record.commitHash}) on ${config.releaseChannel} channel.`,
-      });
-    }, 350);
+    }
   };
 
   const handleUploadPatchPackage = (file: File | undefined, inputEl?: HTMLInputElement | null) => {
@@ -2908,6 +2945,9 @@ function Settings({
             </button>
             <button type="button" aria-pressed={section === "updates"} onClick={() => { setSection("updates"); setMsg(null); }}>
               Software Update (v{registry.systemConfig.systemVersion})
+            </button>
+            <button type="button" aria-pressed={section === "setup"} onClick={() => { setSection("setup"); setMsg(null); }}>
+              Local Setup &amp; Apps
             </button>
             <button type="button" aria-pressed={section === "analytics"} onClick={() => { setSection("analytics"); setMsg(null); }}>
               Live Analytics &amp; Policies
@@ -3446,15 +3486,17 @@ function Settings({
               </span>
             </div>
             <div className="kpi-cell">
-              <span className="kpi-label">Latest Catalog Release</span>
+              <span className="kpi-label">Latest Catalog / OTA Target</span>
               <span className="kpi-value">
                 v{AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version}
               </span>
               <span className="meta-inline">
-                {registry.systemConfig.systemVersion ===
-                AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
-                  ? "Up to date with catalog"
-                  : "Upgrade available"}
+                {compareSoftwareVersions(
+                  registry.systemConfig.systemVersion,
+                  AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
+                ) >= 0
+                  ? `Up to date · Next OTA: v${nextUpgradeTarget}`
+                  : "Official upgrade available"}
               </span>
             </div>
           </div>
@@ -3463,21 +3505,24 @@ function Settings({
             {/* LEFT: REPOSITORY SYNC & RELEASE UPGRADE */}
             <div className="panel" style={{ background: "var(--surface-subtle)" }}>
               <div style={{ fontWeight: 600, marginBottom: 10 }}>
-                1. Upgrade Release or Pull from Repository (`git pull origin main`)
+                1. Hosted OTA Upgrade &amp; Repository Sync (`git pull origin main`)
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div className="grid-equal-2col" style={{ gap: 10 }}>
                   <div className="field-group">
-                    <label>Target Software Release</label>
+                    <label>Target Software Release / OTA Build</label>
                     <select
                       value={selectedTargetVersion}
                       onChange={e => setSelectedTargetVersion(e.target.value)}
                     >
-                      {AVAILABLE_SOFTWARE_RELEASES.slice()
+                      {dynamicReleases
+                        .slice()
                         .reverse()
                         .map(rel => (
                           <option key={rel.version} value={rel.version}>
-                            v{rel.version} — {rel.summary.slice(0, 42)} ({rel.commitHash})
+                            v{rel.version}
+                            {rel.version === registry.systemConfig.systemVersion ? " (Installed)" : ""} —{" "}
+                            {rel.summary.slice(0, 42)} ({rel.commitHash})
                           </option>
                         ))}
                     </select>
@@ -3517,8 +3562,8 @@ function Settings({
 
                 {(() => {
                   const selectedRel =
-                    AVAILABLE_SOFTWARE_RELEASES.find(r => r.version === selectedTargetVersion) ??
-                    AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1];
+                    dynamicReleases.find(r => r.version === selectedTargetVersion) ??
+                    dynamicReleases[dynamicReleases.length - 1];
                   return (
                     <div
                       style={{
@@ -3549,11 +3594,17 @@ function Settings({
                     onClick={handleInstallSelectedRelease}
                   >
                     <RefreshCw size={14} />
-                    <span>{updatingSoftware ? "Installing…" : `Install Release v${selectedTargetVersion}`}</span>
+                    <span>
+                      {updatingSoftware
+                        ? "Upgrading…"
+                        : compareSoftwareVersions(selectedTargetVersion, registry.systemConfig.systemVersion) <= 0
+                        ? `Upgrade to Next Build (v${nextUpgradeTarget})`
+                        : `Upgrade to Release v${selectedTargetVersion}`}
+                    </span>
                   </button>
                   <button type="button" disabled={updatingSoftware} onClick={handleGitPullUpdate}>
                     <RefreshCw size={14} />
-                    <span>Sync Repo (`git pull origin {gitBranchInput || "main"}`)</span>
+                    <span>Sync Hosted / Repo (`git pull origin {gitBranchInput || "main"}`)</span>
                   </button>
                 </div>
               </div>
@@ -3606,30 +3657,51 @@ function Settings({
               </div>
 
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <span className="meta-inline">Have an offline `.json` software update package?</span>
-                <label
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "5px 12px",
-                    borderRadius: 6,
-                    border: "1px solid var(--line-strong)",
-                    background: "var(--surface-solid)",
-                    fontSize: 12.5,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  <Upload size={13} />
-                  <span>Upload Software Patch (.json)</span>
-                  <input
-                    type="file"
-                    accept=".json,application/json"
-                    style={{ display: "none" }}
-                    onChange={e => handleUploadPatchPackage(e.target.files?.[0], e.currentTarget)}
-                  />
-                </label>
+                <span className="meta-inline">Signed JSON OTA Upgrade Packages (Hosted &amp; Air-Gapped):</span>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    style={{ minHeight: 30, padding: "4px 10px", fontSize: 12 }}
+                    onClick={() => {
+                      exportSignedSoftwarePatchJson({
+                        actorName: meName,
+                        targetVersion: selectedTargetVersion,
+                        channel: releaseChannelInput,
+                        summary: customUpdateSummary.trim() || undefined,
+                      });
+                      setMsg({
+                        ok: true,
+                        text: `Exported signed upgrade package tfsecure-upgrade-v${selectedTargetVersion}.json.`,
+                      });
+                    }}
+                  >
+                    <Download size={13} />
+                    <span>Export Patch (.json)</span>
+                  </button>
+                  <label
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "5px 12px",
+                      borderRadius: 6,
+                      border: "1px solid var(--line-strong)",
+                      background: "var(--surface-solid)",
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Upload size={13} />
+                    <span>Upload Software Patch (.json)</span>
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      style={{ display: "none" }}
+                      onChange={e => handleUploadPatchPackage(e.target.files?.[0], e.currentTarget)}
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -3788,6 +3860,13 @@ function Settings({
             </div>
           </div>
         </section>
+      )}
+
+      {section === "setup" && (
+        <PlatformInstallerAndSetupCenter
+          actorEmail={meName}
+          orgNameDefault={f.orgName}
+        />
       )}
 
       {section === "backup" && (
@@ -3999,11 +4078,19 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   const { activeOnSite } = useUnifiedOnSiteList();
   const registry = useGateRegistry();
 
-  const [tab, setTab] = useState("");
+  const [tab, setTab] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get("tab");
+      return q ? decodeURIComponent(q) : "";
+    } catch {
+      return "";
+    }
+  });
   const [settingsInitialSection, setSettingsInitialSection] = useState<
-    "theme" | "images" | "updates" | "analytics" | "backup"
+    "theme" | "images" | "updates" | "setup" | "analytics" | "backup"
   >("theme");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [setupModalOpen, setSetupModalOpen] = useState(false);
 
   useEffect(() => {
     if (me === null) ensure();
@@ -4174,7 +4261,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
   const selectTab = (t: string) => {
     if (t.startsWith("Settings:")) {
-      const sub = t.split(":")[1] as "theme" | "images" | "updates" | "analytics" | "backup";
+      const sub = t.split(":")[1] as "theme" | "images" | "updates" | "setup" | "analytics" | "backup";
       setSettingsInitialSection(sub || "updates");
       setTab("Settings");
     } else {
@@ -4287,6 +4374,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
           </div>
 
           <div className="topbar-zone-actions">
+            <PWAInstallButton compact onOpenSetupModal={() => setSetupModalOpen(true)} />
             <Bell />
             <button
               type="button"
@@ -4345,6 +4433,12 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
           </div>
         </main>
       </div>
+      <PlatformInstallerModal
+        open={setupModalOpen}
+        onClose={() => setSetupModalOpen(false)}
+        actorEmail={me.email}
+      />
+      <OfflineIndicator />
     </div>
   );
 }

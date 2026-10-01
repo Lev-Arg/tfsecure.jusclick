@@ -1,0 +1,40 @@
+{
+  "appId": "com.tfcommodities.tfsecure.desktop",
+  "productName": "TFsecure Gate Access Control",
+  "copyright": "Copyright © 2026 Jusclick-TeQiQ / TF Commodities",
+  "directories": {
+    "output": "release/windows",
+    "buildResources": "public"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64", "arm64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      },
+      {
+        "target": "msi",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/pwa-512x512.png",
+    "artifactName": "TFsecure-Setup-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": true,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "TFsecure Security Operations"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "app": "TFsecure — Security Operations & Gate Access Control",
+  "engine": "Jusclick-TeQiQ Hosted OTA & Hybrid Update Engine",
+  "latestVersion": "2.6.1",
+  "channel": "Production",
+  "commitHash": "d49a82c",
+  "releasedAt": "2026-10-01T15:45:00Z",
+  "hostingCompatible": true,
+  "zeroDowntimeOta": true,
+  "summary": "Hosted Zero-Downtime OTA Update & Upgrade Engine, Multi-Platform PWA & Local Host Setup",
+  "changelog": [
+    "Fault-tolerant Hosted OTA Update & Upgrade pipeline with automatic pre-upgrade snapshot & rollback protection",
+    "Live /version.json release manifest discovery and Service Worker + Cache Storage synchronization",
+    "Multi-platform installability for iOS (Safari/Capacitor), Android (WebAPK/Capacitor), and Windows (PWA/Electron)",
+    "Interactive One-Time Local Host Setup Wizard (setup.mjs, setup-windows.bat, setup-unix.sh)"
+  ],
+  "releases": [
+    {
+      "version": "2.4.0",
+      "channel": "Production",
+      "commitHash": "7c91e04",
+      "releasedAt": "2026-09-15",
+      "summary": "Baseline Security Operations & Gate Access Control",
+      "changelog": [
+        "Single-use 6-digit SHA-256 visitor passcodes with expiration enforcement",
+        "Brute-force gate lockout protection (15 failed attempts in 10m)",
+        "Department-scoped RBAC for Admin, Security, Department Head, and Staff"
+      ]
+    },
+    {
+      "version": "2.4.2",
+      "channel": "Production",
+      "commitHash": "b4e82a9",
+      "releasedAt": "2026-09-24",
+      "summary": "Audit Ledger Checkout Tracking & Web Audio Chime",
+      "changelog": [
+        "Full visitor check-out recording across Audit Log, Dashboard System Logs, and CSV reports",
+        "Synthesized soft, high, stretched two-tone ding-dong notification chime",
+        "Centralized tablet & desktop security header banner"
+      ]
+    },
+    {
+      "version": "2.5.0",
+      "channel": "Production",
+      "commitHash": "e19d4f2",
+      "releasedAt": "2026-09-29",
+      "summary": "System Admin Suite, Admin Invitations, Media Persistence & Disaster Recovery",
+      "changelog": [
+        "Primary System Admin bootstrap promotion and pre-approved Admin/Staff invitation tokens",
+        "Persistent custom logo & background image optimizer with manual removal controls",
+        "Live Production Analytics telemetry and full JSON system backup & restore"
+      ]
+    },
+    {
+      "version": "2.5.1",
+      "channel": "Production",
+      "commitHash": "f62a9d8",
+      "releasedAt": "2026-10-01",
+      "summary": "Mandatory Data Protection (Act 843) Gate & System Architecture Documentation",
+      "changelog": [
+        "Pre-login and workspace Data Protection (Act 843) & Security Policy agreement gate with audit logging",
+        "Comprehensive Jusclick-TeQiQ Architecture Proposal & Pilot Evaluation checklist in Documentation",
+        "Hardened CSP image policy and storage quota protection for high-resolution media"
+      ]
+    },
+    {
+      "version": "2.6.0",
+      "channel": "Production",
+      "commitHash": "c84e19a",
+      "releasedAt": "2026-10-01",
+      "summary": "Multi-Platform (iOS, Android, Windows) Installability & One-Time Local Host Setup",
+      "changelog": [
+        "Full PWA manifest, Apple Touch Icons, Windows Tile config, Capacitor (iOS/Android), and Electron (Windows) configs",
+        "Interactive 4-step One-Time Local Host Provisioning Wizard (setup.mjs, setup-windows.bat, setup-unix.sh)",
+        "In-app Install button and live Offline Mode indicator"
+      ]
+    },
+    {
+      "version": "2.6.1",
+      "channel": "Production",
+      "commitHash": "d49a82c",
+      "releasedAt": "2026-10-01",
+      "summary": "Hosted Zero-Downtime OTA Update & Upgrade Engine with Service Worker Sync",
+      "changelog": [
+        "Hosted-safe update & upgrade pipeline (/version.json + Service Worker cache refresh + automatic fallback)",
+        "Pre-upgrade state snapshot with automatic rollback protection if any step is interrupted",
+        "Dynamic release catalog and one-click signed JSON patch export/import for air-gapped or hosted instances"
+      ]
+    }
+  ]
+}
