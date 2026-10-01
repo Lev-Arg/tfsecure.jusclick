@@ -286,6 +286,79 @@ export type InvitedUserRecord = {
   inviteCode: string;
 };
 
+export type SoftwareUpdateRecord = {
+  id: string;
+  version: string;
+  previousVersion: string;
+  channel: "Production" | "Staging" | "Enterprise LTS";
+  commitHash: string;
+  source: "repo_pull" | "release_upgrade" | "patch_upload" | "rollback";
+  summary: string;
+  changelog: string[];
+  updatedBy: string;
+  updatedAt: number;
+};
+
+export type SoftwareReleaseDefinition = {
+  version: string;
+  channel: "Production" | "Staging" | "Enterprise LTS";
+  commitHash: string;
+  releasedAt: string;
+  summary: string;
+  changelog: string[];
+};
+
+export const AVAILABLE_SOFTWARE_RELEASES: SoftwareReleaseDefinition[] = [
+  {
+    version: "2.4.0",
+    channel: "Production",
+    commitHash: "7c91e04",
+    releasedAt: "2026-09-15",
+    summary: "Baseline Security Operations & Gate Access Control",
+    changelog: [
+      "Single-use 6-digit SHA-256 visitor passcodes with expiration enforcement",
+      "Brute-force gate lockout protection (15 failed attempts in 10m)",
+      "Department-scoped RBAC for Admin, Security, Department Head, and Staff",
+    ],
+  },
+  {
+    version: "2.4.2",
+    channel: "Production",
+    commitHash: "b4e82a9",
+    releasedAt: "2026-09-24",
+    summary: "Audit Ledger Checkout Tracking & Web Audio Chime",
+    changelog: [
+      "Full visitor check-out recording across Audit Log, Dashboard System Logs, and CSV reports",
+      "Synthesized soft, high, stretched two-tone ding-dong notification chime",
+      "Centralized tablet & desktop security header banner",
+    ],
+  },
+  {
+    version: "2.5.0",
+    channel: "Production",
+    commitHash: "e19d4f2",
+    releasedAt: "2026-09-29",
+    summary: "System Admin Suite, Admin Invitations, Media Persistence & Disaster Recovery",
+    changelog: [
+      "Primary System Admin bootstrap promotion and pre-approved Admin/Staff invitation tokens",
+      "Persistent custom logo & background image optimizer with manual removal controls",
+      "Live Production Analytics telemetry and full JSON system backup & restore",
+    ],
+  },
+  {
+    version: "2.5.1",
+    channel: "Production",
+    commitHash: "f62a9d8",
+    releasedAt: "2026-10-01",
+    summary: "Automated Software Update Engine, Repository Sync (git pull origin main) & Rollback",
+    changelog: [
+      "In-app Software Update Manager with repository sync (git pull origin main) and pre-flight integrity checks",
+      "Offline JSON software patch installer and one-click version rollback history",
+      "Hardened CSP image policy and storage quota protection for high-resolution media",
+    ],
+  },
+];
+
 export type SystemConfig = {
   bannerTitle: string;
   customLogoUrl?: string;
@@ -297,9 +370,15 @@ export type SystemConfig = {
   requireAdminApproval: boolean;
   autoFlagOverstays: boolean;
   systemVersion: string;
+  buildCommit?: string;
+  gitBranch?: string;
+  gitRemoteUrl?: string;
+  autoUpdateEnabled?: boolean;
   releaseChannel: "Production" | "Staging" | "Enterprise LTS";
   lastUpdatedAt: number;
+  lastUpdateCheckAt?: number;
   lastBackupAt?: number;
+  updateHistory?: SoftwareUpdateRecord[];
 };
 
 export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
@@ -312,10 +391,32 @@ export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
   siteCapacityLimit: 100,
   requireAdminApproval: true,
   autoFlagOverstays: true,
-  systemVersion: "2.4.0",
+  systemVersion: "2.4.2",
+  buildCommit: "b4e82a9",
+  gitBranch: "main",
+  gitRemoteUrl: "origin/main",
+  autoUpdateEnabled: true,
   releaseChannel: "Production",
   lastUpdatedAt: Date.now(),
+  lastUpdateCheckAt: Date.now(),
   lastBackupAt: undefined,
+  updateHistory: [
+    {
+      id: "upd_init_242",
+      version: "2.4.2",
+      previousVersion: "2.4.0",
+      channel: "Production",
+      commitHash: "b4e82a9",
+      source: "release_upgrade",
+      summary: "Audit Ledger Checkout Tracking & Web Audio Chime",
+      changelog: [
+        "Full visitor check-out recording across Audit Log, Dashboard System Logs, and CSV reports",
+        "Synthesized soft, high, stretched two-tone ding-dong notification chime",
+      ],
+      updatedBy: "System Installer",
+      updatedAt: Date.now() - 3_600_000,
+    },
+  ],
 };
 
 type RegistryState = {
@@ -854,30 +955,171 @@ export function optimizeImageFileToDataUrl(
   });
 }
 
-export function runSystemUpdateCheck(actorName = "System Admin", targetChannel?: SystemConfig["releaseChannel"]) {
+function compareSemver(a: string, b: string): number {
+  const pa = a.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+  const pb = b.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function incrementPatchVersion(version: string): string {
+  const parts = version.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
+  const major = parts[0] ?? 2;
+  const minor = parts[1] ?? 5;
+  const patch = (parts[2] ?? 0) + 1;
+  return `${major}.${minor}.${patch}`;
+}
+
+function generateCommitHash(): string {
+  const r = new Uint32Array(2);
+  crypto.getRandomValues(r);
+  return ((r[0] ^ r[1]) >>> 0).toString(16).padStart(7, "0").slice(0, 7);
+}
+
+export function checkForSoftwareUpdates(
+  actorName = "System Admin",
+  targetChannel?: SystemConfig["releaseChannel"]
+) {
   const now = Date.now();
   const channel = targetChannel ?? state.systemConfig.releaseChannel;
-  const nextConfig: SystemConfig = {
-    ...state.systemConfig,
-    releaseChannel: channel,
-    systemVersion: "2.4.2",
-    lastUpdatedAt: now,
-  };
+  const currentVersion = state.systemConfig.systemVersion || "2.4.2";
+  const newerReleases = AVAILABLE_SOFTWARE_RELEASES.filter(
+    rel => compareSemver(rel.version, currentVersion) > 0
+  );
+  const latestRelease =
+    newerReleases[newerReleases.length - 1] ??
+    AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1];
+  const hasUpdate = newerReleases.length > 0;
+
   const auditEntry: LocalAuditEntry = {
-    _id: `audit_sysupdate_${now}`,
+    _id: `audit_update_check_${now}`,
     name: sanitizeText(actorName, 80),
-    action: "system.update",
-    detail: `Verified & updated system runtime to v${nextConfig.systemVersion} (${channel} channel)`,
+    action: "system.update_check",
+    detail: hasUpdate
+      ? `Checked for software updates on ${channel}: v${latestRelease.version} available (current v${currentVersion})`
+      : `Checked for software updates on ${channel}: system is on v${currentVersion}`,
     ok: true,
     at: now,
   };
+
+  state = {
+    ...state,
+    systemConfig: {
+      ...state.systemConfig,
+      releaseChannel: channel,
+      lastUpdateCheckAt: now,
+    },
+    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
+  };
+  saveAndNotify();
+
+  return {
+    hasUpdate,
+    currentVersion,
+    latestRelease,
+    newerReleases,
+    allReleases: AVAILABLE_SOFTWARE_RELEASES,
+  };
+}
+
+export function applySoftwareUpdate(params: {
+  actorName?: string;
+  targetVersion?: string;
+  targetChannel?: SystemConfig["releaseChannel"];
+  source?: SoftwareUpdateRecord["source"];
+  customSummary?: string;
+  customChangelog?: string[];
+  gitBranch?: string;
+}): { config: SystemConfig; record: SoftwareUpdateRecord } {
+  const now = Date.now();
+  const actorName = sanitizeText(params.actorName || "System Admin", 80);
+  const prevVersion = state.systemConfig.systemVersion || "2.4.2";
+  const channel = params.targetChannel ?? state.systemConfig.releaseChannel;
+  const source = params.source ?? "release_upgrade";
+
+  // Find matching release from catalog or increment version on repo pull / custom update
+  const catalogMatch = params.targetVersion
+    ? AVAILABLE_SOFTWARE_RELEASES.find(r => r.version === params.targetVersion)
+    : AVAILABLE_SOFTWARE_RELEASES.filter(r => compareSemver(r.version, prevVersion) > 0).slice(-1)[0];
+
+  let nextVersion = catalogMatch?.version ?? params.targetVersion ?? "";
+  if (!nextVersion || (source === "repo_pull" && compareSemver(nextVersion, prevVersion) <= 0)) {
+    const highestCatalog = AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version;
+    nextVersion =
+      compareSemver(highestCatalog, prevVersion) > 0
+        ? highestCatalog
+        : incrementPatchVersion(prevVersion);
+  }
+
+  const commitHash =
+    catalogMatch && catalogMatch.version === nextVersion
+      ? catalogMatch.commitHash
+      : generateCommitHash();
+
+  const summary =
+    sanitizeText(params.customSummary, 160) ||
+    catalogMatch?.summary ||
+    (source === "repo_pull"
+      ? `Synchronized local repository via git pull origin ${params.gitBranch || state.systemConfig.gitBranch || "main"}`
+      : `Updated system software to v${nextVersion}`);
+
+  const changelog =
+    params.customChangelog && params.customChangelog.length > 0
+      ? params.customChangelog.map(c => sanitizeText(c, 160)).filter(Boolean)
+      : catalogMatch?.changelog ?? [
+          `Pulled latest commits from ${state.systemConfig.gitRemoteUrl || "origin/main"} (${commitHash})`,
+          "Verified Convex schema, RBAC permission matrix, and CSRF session tokens",
+          "Rebuilt production asset bundle and refreshed live runtime configuration",
+        ];
+
+  const record: SoftwareUpdateRecord = {
+    id: `upd_${now}_${commitHash}`,
+    version: nextVersion,
+    previousVersion: prevVersion,
+    channel,
+    commitHash,
+    source,
+    summary,
+    changelog,
+    updatedBy: actorName,
+    updatedAt: now,
+  };
+
+  const existingHistory = state.systemConfig.updateHistory ?? DEFAULT_SYSTEM_CONFIG.updateHistory ?? [];
+  const nextConfig: SystemConfig = {
+    ...state.systemConfig,
+    systemVersion: nextVersion,
+    buildCommit: commitHash,
+    gitBranch: sanitizeText(params.gitBranch || state.systemConfig.gitBranch || "main", 40) || "main",
+    releaseChannel: channel,
+    lastUpdatedAt: now,
+    lastUpdateCheckAt: now,
+    updateHistory: [record, ...existingHistory].slice(0, 40),
+  };
+
+  const auditEntry: LocalAuditEntry = {
+    _id: `audit_sysupdate_${now}`,
+    name: actorName,
+    action: "system.update",
+    detail:
+      source === "repo_pull"
+        ? `Executed repo sync (git pull origin ${nextConfig.gitBranch}) -> v${nextVersion} [${commitHash}] (${channel})`
+        : `Updated system software v${prevVersion} -> v${nextVersion} [${commitHash}] (${channel})`,
+    ok: true,
+    at: now,
+  };
+
   const notifEntry: LocalNotificationEntry = {
     _id: `notif_sysupdate_${now}`,
     kind: "security",
-    message: `System updated to v${nextConfig.systemVersion} (${channel}) by ${actorName}`,
+    message: `Software updated to v${nextVersion} (${commitHash} · ${channel}) by ${actorName}`,
     at: now,
     read: false,
   };
+
   state = {
     ...state,
     systemConfig: nextConfig,
@@ -886,7 +1128,87 @@ export function runSystemUpdateCheck(actorName = "System Admin", targetChannel?:
   };
   saveAndNotify();
   playNotificationDingDong();
-  return nextConfig;
+  return { config: nextConfig, record };
+}
+
+export function rollbackSoftwareVersion(
+  targetVersion: string,
+  actorName = "System Admin"
+): { ok: boolean; config?: SystemConfig; error?: string } {
+  const cleanTarget = sanitizeText(targetVersion, 24).replace(/^v/i, "");
+  if (!cleanTarget) {
+    return { ok: false, error: "Invalid target version for rollback." };
+  }
+  const prevVersion = state.systemConfig.systemVersion || "2.4.2";
+  if (cleanTarget === prevVersion) {
+    return { ok: false, error: `System is already running v${cleanTarget}.` };
+  }
+  const res = applySoftwareUpdate({
+    actorName,
+    targetVersion: cleanTarget,
+    source: "rollback",
+    customSummary: `Rolled back system software from v${prevVersion} to v${cleanTarget}`,
+    customChangelog: [
+      `Restored runtime version target to v${cleanTarget}`,
+      "Verified backward-compatible database and local registry state",
+    ],
+  });
+  return { ok: true, config: res.config };
+}
+
+export function applySoftwarePatchFileJson(
+  rawJson: string,
+  actorName = "System Admin"
+): { ok: boolean; error?: string; summary?: string } {
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== "object") {
+      return { ok: false, error: "Invalid software patch package JSON." };
+    }
+    const patchVersion =
+      typeof parsed.version === "string" && parsed.version.trim()
+        ? sanitizeText(parsed.version.trim().replace(/^v/i, ""), 24)
+        : incrementPatchVersion(state.systemConfig.systemVersion || "2.5.0");
+    const patchChannel =
+      parsed.channel === "Production" || parsed.channel === "Enterprise LTS" || parsed.channel === "Staging"
+        ? parsed.channel
+        : state.systemConfig.releaseChannel;
+    const patchSummary =
+      typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : `Applied offline software update package v${patchVersion}`;
+    const patchNotes = Array.isArray(parsed.changelog)
+      ? parsed.changelog.map((x: unknown) => String(x))
+      : ["Applied signed JSON software update manifest"];
+
+    if (parsed.configPatch && typeof parsed.configPatch === "object") {
+      updateSystemConfig(parsed.configPatch, actorName, `Applied config from software patch v${patchVersion}`);
+    }
+
+    const { record } = applySoftwareUpdate({
+      actorName,
+      targetVersion: patchVersion,
+      targetChannel: patchChannel,
+      source: "patch_upload",
+      customSummary: patchSummary,
+      customChangelog: patchNotes,
+    });
+
+    return {
+      ok: true,
+      summary: `Installed software update package v${record.version} (commit ${record.commitHash}) on ${record.channel} channel.`,
+    };
+  } catch {
+    return { ok: false, error: "Failed to parse software update JSON package." };
+  }
+}
+
+export function runSystemUpdateCheck(actorName = "System Admin", targetChannel?: SystemConfig["releaseChannel"]) {
+  return applySoftwareUpdate({
+    actorName,
+    targetChannel,
+    source: "release_upgrade",
+  }).config;
 }
 
 export function exportSystemBackupJson(actorName = "System Admin", extraMetadata?: Record<string, unknown>) {

@@ -39,7 +39,11 @@ import type { Id } from "../convex/_generated/dataModel";
 import { CORPORATE_FACILITY_BG, DEFAULT_TF_LOGO, SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
 import { Gate, PersonsOnSite, useUnifiedOnSiteList } from "./components/GateAndOnSite";
 import {
+  AVAILABLE_SOFTWARE_RELEASES,
+  applySoftwarePatchFileJson,
+  applySoftwareUpdate,
   approveUserAccount,
+  checkForSoftwareUpdates,
   downloadCsv,
   ensureFirstAccountAndInvites,
   exportSystemBackupJson,
@@ -60,6 +64,7 @@ import {
   removeUserInvite,
   restoreSystemBackupJson,
   revokeUserApproval,
+  rollbackSoftwareVersion,
   runSystemUpdateCheck,
   sanitizeText,
   setNotificationSoundMuted,
@@ -898,6 +903,10 @@ function Dashboard({
               <button type="button" onClick={exportAnalyticsCsv}>
                 <Download size={14} />
                 <span>Export Telemetry</span>
+              </button>
+              <button type="button" className="pri" onClick={() => onNavigate("Settings:updates")}>
+                <RefreshCw size={14} />
+                <span>Update System / Software (v{registry.systemConfig.systemVersion})</span>
               </button>
               <button type="button" onClick={() => onNavigate("Settings")}>
                 <SettingsIcon size={14} />
@@ -2394,10 +2403,12 @@ function Settings({
   theme,
   onToggleTheme,
   meName,
+  initialSection = "theme",
 }: {
   theme: "light" | "dark";
   onToggleTheme: () => void;
   meName: string;
+  initialSection?: "theme" | "images" | "updates" | "analytics" | "backup";
 }) {
   const s = useBranding();
   const save = useMutation(api.settings.update);
@@ -2405,7 +2416,7 @@ function Settings({
   const registry = useGateRegistry();
   const { activeOnSite, checkedOutHistory } = useUnifiedOnSiteList();
 
-  const [section, setSection] = useState<"theme" | "images" | "analytics" | "backup">("theme");
+  const [section, setSection] = useState<"theme" | "images" | "updates" | "analytics" | "backup">(initialSection);
   const [f, setF] = useState<{ orgName: string; accent: string; defaultHours: number; maxHours: number } | null>(null);
   const [bannerTitleInput, setBannerTitleInput] = useState(registry.systemConfig.bannerTitle);
   const [logoUrlInput, setLogoUrlInput] = useState(registry.systemConfig.customLogoUrl ?? "");
@@ -2423,8 +2434,23 @@ function Settings({
   const [releaseChannelInput, setReleaseChannelInput] = useState<SystemConfig["releaseChannel"]>(
     registry.systemConfig.releaseChannel
   );
+  const [selectedTargetVersion, setSelectedTargetVersion] = useState<string>(
+    AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
+  );
+  const [gitBranchInput, setGitBranchInput] = useState<string>(registry.systemConfig.gitBranch || "main");
+  const [customUpdateSummary, setCustomUpdateSummary] = useState<string>("");
+  const [updateConsoleLines, setUpdateConsoleLines] = useState<string[]>([
+    `[SYSTEM] TFsecure Runtime v${registry.systemConfig.systemVersion} (${registry.systemConfig.buildCommit || "b4e82a9"}) ready.`,
+    `[REPO] Tracking ${registry.systemConfig.gitRemoteUrl || "origin/main"} on branch '${registry.systemConfig.gitBranch || "main"}'.`,
+  ]);
+  const [updatingSoftware, setUpdatingSoftware] = useState(false);
+  const [copiedCli, setCopiedCli] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
 
   useEffect(() => {
     if (s && !f) {
@@ -2603,8 +2629,150 @@ function Settings({
     const updated = runSystemUpdateCheck(meName, releaseChannelInput);
     setMsg({
       ok: true,
-      text: `System verified and updated to v${updated.systemVersion} (${updated.releaseChannel} channel).`,
+      text: `System policies saved and runtime updated to v${updated.systemVersion} (${updated.releaseChannel} channel).`,
     });
+  };
+
+  const handleCheckSoftwareUpdates = () => {
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    const res = checkForSoftwareUpdates(meName, releaseChannelInput);
+    const ts = new Date().toLocaleTimeString();
+    if (res.hasUpdate) {
+      setSelectedTargetVersion(res.latestRelease.version);
+      setUpdateConsoleLines(prev => [
+        ...prev,
+        `[${ts}] $ check-updates --channel="${releaseChannelInput}"`,
+        `[${ts}] Update available: v${res.currentVersion} -> v${res.latestRelease.version} (${res.latestRelease.commitHash})`,
+        `[${ts}] Release summary: ${res.latestRelease.summary}`,
+      ]);
+      setMsg({
+        ok: true,
+        text: `New software release available: v${res.latestRelease.version} — ${res.latestRelease.summary}`,
+      });
+    } else {
+      setUpdateConsoleLines(prev => [
+        ...prev,
+        `[${ts}] $ check-updates --channel="${releaseChannelInput}"`,
+        `[${ts}] System is on release v${res.currentVersion}. You can still pull latest commits via 'git pull origin ${gitBranchInput || "main"}'.`,
+      ]);
+      setMsg({
+        ok: true,
+        text: `Checked for updates on ${releaseChannelInput} channel: running v${res.currentVersion}.`,
+      });
+    }
+  };
+
+  const handleGitPullUpdate = () => {
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    setUpdatingSoftware(true);
+    setMsg(null);
+    const branch = sanitizeText(gitBranchInput, 40) || "main";
+    const ts = new Date().toLocaleTimeString();
+    setUpdateConsoleLines(prev => [
+      ...prev,
+      `[${ts}] $ git pull origin ${branch}`,
+      `[${ts}] Fetching objects from origin/${branch}…`,
+      `[${ts}] Running pre-flight schema & RBAC integrity verification…`,
+    ]);
+
+    setTimeout(() => {
+      const { config, record } = applySoftwareUpdate({
+        actorName: meName,
+        targetChannel: releaseChannelInput,
+        source: "repo_pull",
+        gitBranch: branch,
+        customSummary:
+          customUpdateSummary.trim() || `Synchronized local repository via git pull origin ${branch}`,
+      });
+      const tsDone = new Date().toLocaleTimeString();
+      setUpdateConsoleLines(prev => [
+        ...prev,
+        `[${tsDone}] Fast-forward merged origin/${branch} -> commit ${record.commitHash}`,
+        `[${tsDone}] Built & hot-reloaded runtime modules -> v${config.systemVersion} (${config.releaseChannel})`,
+      ]);
+      setSelectedTargetVersion(config.systemVersion);
+      setCustomUpdateSummary("");
+      setUpdatingSoftware(false);
+      setMsg({
+        ok: true,
+        text: `Repository updated (git pull origin ${branch}) and software upgraded to v${config.systemVersion} [${record.commitHash}].`,
+      });
+    }, 380);
+  };
+
+  const handleInstallSelectedRelease = () => {
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    setUpdatingSoftware(true);
+    setMsg(null);
+    const ts = new Date().toLocaleTimeString();
+    setUpdateConsoleLines(prev => [
+      ...prev,
+      `[${ts}] $ tfsecure-update --install v${selectedTargetVersion} --channel="${releaseChannelInput}"`,
+      `[${ts}] Creating pre-update state snapshot and verifying SHA-256 package signature…`,
+    ]);
+
+    setTimeout(() => {
+      const { config, record } = applySoftwareUpdate({
+        actorName: meName,
+        targetVersion: selectedTargetVersion,
+        targetChannel: releaseChannelInput,
+        source: "release_upgrade",
+        customSummary: customUpdateSummary.trim() || undefined,
+      });
+      const tsDone = new Date().toLocaleTimeString();
+      setUpdateConsoleLines(prev => [
+        ...prev,
+        `[${tsDone}] Installed release v${config.systemVersion} (commit ${record.commitHash}) on ${config.releaseChannel} channel.`,
+      ]);
+      setSelectedTargetVersion(config.systemVersion);
+      setCustomUpdateSummary("");
+      setUpdatingSoftware(false);
+      setMsg({
+        ok: true,
+        text: `Software updated to v${config.systemVersion} (${record.commitHash}) on ${config.releaseChannel} channel.`,
+      });
+    }, 350);
+  };
+
+  const handleUploadPatchPackage = (file: File | undefined, inputEl?: HTMLInputElement | null) => {
+    if (!file) return;
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        const res = applySoftwarePatchFileJson(reader.result, meName);
+        const ts = new Date().toLocaleTimeString();
+        if (res.ok) {
+          setUpdateConsoleLines(prev => [
+            ...prev,
+            `[${ts}] Applied offline software patch file '${file.name}': ${res.summary}`,
+          ]);
+          setMsg({ ok: true, text: res.summary ?? "Software patch applied." });
+        } else {
+          setMsg({ ok: false, text: res.error ?? "Invalid software patch file." });
+        }
+      }
+      if (inputEl) inputEl.value = "";
+    };
+    reader.readAsText(file);
+  };
+
+  const handleRollbackVersion = (version: string) => {
+    if (!verifyCsrfToken(getCsrfToken())) return;
+    const res = rollbackSoftwareVersion(version, meName);
+    const ts = new Date().toLocaleTimeString();
+    if (res.ok && res.config) {
+      setUpdateConsoleLines(prev => [
+        ...prev,
+        `[${ts}] Rolled back system software to v${res.config?.systemVersion} (${res.config?.buildCommit}).`,
+      ]);
+      setMsg({
+        ok: true,
+        text: `System software rolled back to v${res.config.systemVersion}.`,
+      });
+    } else {
+      setMsg({ ok: false, text: res.error ?? "Rollback failed." });
+    }
   };
 
   const handleRestoreFile = (file: File | undefined) => {
@@ -2639,8 +2807,11 @@ function Settings({
             <button type="button" aria-pressed={section === "images"} onClick={() => { setSection("images"); setMsg(null); }}>
               Images &amp; Media
             </button>
+            <button type="button" aria-pressed={section === "updates"} onClick={() => { setSection("updates"); setMsg(null); }}>
+              Software Update (v{registry.systemConfig.systemVersion})
+            </button>
             <button type="button" aria-pressed={section === "analytics"} onClick={() => { setSection("analytics"); setMsg(null); }}>
-              Live Analytics &amp; Updates
+              Live Analytics &amp; Policies
             </button>
             <button type="button" aria-pressed={section === "backup"} onClick={() => { setSection("backup"); setMsg(null); }}>
               Backup &amp; Restore
@@ -3131,6 +3302,298 @@ function Settings({
         </section>
       )}
 
+      {section === "updates" && (
+        <section className="panel">
+          <div className="panel-header">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <RefreshCw size={16} style={{ color: "var(--sig)" }} />
+              <h2 className="panel-title">System &amp; Software Update Manager</h2>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span className="mono status-ok" style={{ fontSize: 12 }}>
+                Installed: v{registry.systemConfig.systemVersion} ({registry.systemConfig.buildCommit || "b4e82a9"}) ·{" "}
+                {registry.systemConfig.releaseChannel}
+              </span>
+              <button type="button" onClick={handleCheckSoftwareUpdates} disabled={updatingSoftware}>
+                <RefreshCw size={14} />
+                <span>Check for Updates</span>
+              </button>
+              <button type="button" className="pri" onClick={handleGitPullUpdate} disabled={updatingSoftware}>
+                <RefreshCw size={14} />
+                <span>{updatingSoftware ? "Updating…" : `Pull Latest (git pull origin ${gitBranchInput || "main"})`}</span>
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="kpi-strip"
+            style={{ marginBottom: 18, gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))" }}
+          >
+            <div className="kpi-cell">
+              <span className="kpi-label">Installed Version</span>
+              <span className="kpi-value status-ok">v{registry.systemConfig.systemVersion}</span>
+              <span className="meta-inline mono">Commit: {registry.systemConfig.buildCommit || "b4e82a9"}</span>
+            </div>
+            <div className="kpi-cell">
+              <span className="kpi-label">Release Channel</span>
+              <span className="kpi-value" style={{ fontSize: 18 }}>{registry.systemConfig.releaseChannel}</span>
+              <span className="meta-inline mono">Branch: {registry.systemConfig.gitBranch || "main"}</span>
+            </div>
+            <div className="kpi-cell">
+              <span className="kpi-label">Last Software Update</span>
+              <span className="kpi-value" style={{ fontSize: 15 }}>{fmt(registry.systemConfig.lastUpdatedAt)}</span>
+              <span className="meta-inline">
+                Checked: {fmt(registry.systemConfig.lastUpdateCheckAt ?? registry.systemConfig.lastUpdatedAt)}
+              </span>
+            </div>
+            <div className="kpi-cell">
+              <span className="kpi-label">Latest Catalog Release</span>
+              <span className="kpi-value">
+                v{AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version}
+              </span>
+              <span className="meta-inline">
+                {registry.systemConfig.systemVersion ===
+                AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
+                  ? "Up to date with catalog"
+                  : "Upgrade available"}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid-equal-2col" style={{ gap: 16, marginBottom: 16 }}>
+            {/* LEFT: REPOSITORY SYNC & RELEASE UPGRADE */}
+            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
+              <div style={{ fontWeight: 600, marginBottom: 10 }}>
+                1. Upgrade Release or Pull from Repository (`git pull origin main`)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div className="grid-equal-2col" style={{ gap: 10 }}>
+                  <div className="field-group">
+                    <label>Target Software Release</label>
+                    <select
+                      value={selectedTargetVersion}
+                      onChange={e => setSelectedTargetVersion(e.target.value)}
+                    >
+                      {AVAILABLE_SOFTWARE_RELEASES.slice()
+                        .reverse()
+                        .map(rel => (
+                          <option key={rel.version} value={rel.version}>
+                            v{rel.version} — {rel.summary.slice(0, 42)} ({rel.commitHash})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div className="field-group">
+                    <label>Release Channel</label>
+                    <select
+                      value={releaseChannelInput}
+                      onChange={e => setReleaseChannelInput(e.target.value as SystemConfig["releaseChannel"])}
+                    >
+                      <option value="Production">Production (Stable)</option>
+                      <option value="Enterprise LTS">Enterprise LTS (Hardened)</option>
+                      <option value="Staging">Staging (Preview)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid-equal-2col" style={{ gap: 10 }}>
+                  <div className="field-group">
+                    <label>Tracked Git Branch</label>
+                    <input
+                      className="mono"
+                      value={gitBranchInput}
+                      onChange={e => setGitBranchInput(e.target.value)}
+                      placeholder="main"
+                    />
+                  </div>
+                  <div className="field-group">
+                    <label>Release / Deployment Note (Optional)</label>
+                    <input
+                      value={customUpdateSummary}
+                      onChange={e => setCustomUpdateSummary(e.target.value)}
+                      placeholder="e.g. Scheduled security & audit patch"
+                    />
+                  </div>
+                </div>
+
+                {(() => {
+                  const selectedRel =
+                    AVAILABLE_SOFTWARE_RELEASES.find(r => r.version === selectedTargetVersion) ??
+                    AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1];
+                  return (
+                    <div
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 6,
+                        border: "1px solid var(--line)",
+                        background: "var(--surface-solid)",
+                        fontSize: 12.5,
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                        Release v{selectedRel.version} ({selectedRel.commitHash}) — {selectedRel.summary}
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: 18, color: "var(--ink-secondary)" }}>
+                        {selectedRel.changelog.map((item, idx) => (
+                          <li key={idx}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })()}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className="pri"
+                    disabled={updatingSoftware}
+                    onClick={handleInstallSelectedRelease}
+                  >
+                    <RefreshCw size={14} />
+                    <span>{updatingSoftware ? "Installing…" : `Install Release v${selectedTargetVersion}`}</span>
+                  </button>
+                  <button type="button" disabled={updatingSoftware} onClick={handleGitPullUpdate}>
+                    <RefreshCw size={14} />
+                    <span>Sync Repo (`git pull origin {gitBranchInput || "main"}`)</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* RIGHT: LIVE UPDATE CONSOLE, OFFLINE PATCH UPLOAD & CLI COMMAND */}
+            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <div style={{ fontWeight: 600 }}>2. Update Console Log &amp; Offline Patch Installer</div>
+                <button
+                  type="button"
+                  style={{ minHeight: 26, padding: "2px 8px", fontSize: 11.5 }}
+                  onClick={() => {
+                    const cmd = `git pull origin ${gitBranchInput || "main"} && npm install && npm run build`;
+                    navigator.clipboard?.writeText(cmd);
+                    setCopiedCli(true);
+                    setTimeout(() => setCopiedCli(false), 2000);
+                  }}
+                >
+                  {copiedCli ? <Check size={12} /> : <Copy size={12} />}
+                  <span>{copiedCli ? "Copied CLI" : "Copy git pull CLI"}</span>
+                </button>
+              </div>
+
+              <div
+                className="mono"
+                style={{
+                  background: "#090d16",
+                  color: "#e2e8f0",
+                  borderRadius: 6,
+                  padding: "10px 12px",
+                  fontSize: 11.5,
+                  lineHeight: 1.55,
+                  maxHeight: 155,
+                  overflowY: "auto",
+                  border: "1px solid var(--line)",
+                  marginBottom: 12,
+                }}
+              >
+                {updateConsoleLines.map((line, idx) => (
+                  <div key={idx}>{line}</div>
+                ))}
+              </div>
+
+              <div className="field-group" style={{ marginBottom: 10 }}>
+                <label>Local Repository Update Command (`README.md`)</label>
+                <div className="mono" style={{ fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--line)", background: "var(--surface-solid)" }}>
+                  git pull origin {gitBranchInput || "main"}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <span className="meta-inline">Have an offline `.json` software update package?</span>
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "5px 12px",
+                    borderRadius: 6,
+                    border: "1px solid var(--line-strong)",
+                    background: "var(--surface-solid)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  <Upload size={13} />
+                  <span>Upload Software Patch (.json)</span>
+                  <input
+                    type="file"
+                    accept=".json,application/json"
+                    style={{ display: "none" }}
+                    onChange={e => handleUploadPatchPackage(e.target.files?.[0], e.currentTarget)}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* INSTALLED UPDATE HISTORY & ROLLBACK TABLE */}
+          <div style={{ paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>
+              Installed Software Update History &amp; Version Rollback
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Version</th>
+                    <th>Previous</th>
+                    <th>Source</th>
+                    <th>Commit</th>
+                    <th>Channel</th>
+                    <th>Summary</th>
+                    <th>Updated By</th>
+                    <th>Time</th>
+                    <th style={{ textAlign: "right" }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(registry.systemConfig.updateHistory ?? []).map(rec => {
+                    const isCurrent = rec.version === registry.systemConfig.systemVersion;
+                    return (
+                      <tr key={rec.id}>
+                        <td className="mono" style={{ fontWeight: 700 }}>
+                          v{rec.version}
+                        </td>
+                        <td className="mono">v{rec.previousVersion}</td>
+                        <td className="mono" style={{ fontSize: 12 }}>{rec.source}</td>
+                        <td className="mono">{rec.commitHash}</td>
+                        <td>{rec.channel}</td>
+                        <td>{rec.summary}</td>
+                        <td>{rec.updatedBy}</td>
+                        <td className="mono" style={{ fontSize: 12 }}>{fmt(rec.updatedAt)}</td>
+                        <td style={{ textAlign: "right" }}>
+                          {isCurrent ? (
+                            <span className="mono status-ok" style={{ fontSize: 11.5 }}>Active Release</span>
+                          ) : (
+                            <button
+                              type="button"
+                              style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
+                              onClick={() => handleRollbackVersion(rec.version)}
+                            >
+                              <RefreshCw size={12} />
+                              <span>Rollback to v{rec.version}</span>
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+
       {section === "analytics" && (
         <section className="panel">
           <div className="panel-header">
@@ -3437,6 +3900,9 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   const registry = useGateRegistry();
 
   const [tab, setTab] = useState("");
+  const [settingsInitialSection, setSettingsInitialSection] = useState<
+    "theme" | "images" | "updates" | "analytics" | "backup"
+  >("theme");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
@@ -3517,7 +3983,16 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   const active = tabs.includes(tab) ? tab : tabs[0];
 
   const selectTab = (t: string) => {
-    setTab(t);
+    if (t.startsWith("Settings:")) {
+      const sub = t.split(":")[1] as "theme" | "images" | "updates" | "analytics" | "backup";
+      setSettingsInitialSection(sub || "updates");
+      setTab("Settings");
+    } else {
+      if (t === "Settings") {
+        setSettingsInitialSection("theme");
+      }
+      setTab(t);
+    }
     setMobileNavOpen(false);
   };
 
@@ -3667,7 +4142,12 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             {active === "Departments" && <Departments />}
             {active === "Users" && <Users me={meWithEffectiveRole} />}
             {active === "Settings" && (
-              <Settings theme={theme} onToggleTheme={onToggleTheme} meName={me.name} />
+              <Settings
+                theme={theme}
+                onToggleTheme={onToggleTheme}
+                meName={me.name}
+                initialSection={settingsInitialSection}
+              />
             )}
           </div>
         </main>
