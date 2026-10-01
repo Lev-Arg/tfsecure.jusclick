@@ -1,0 +1,6 @@
+{
+  "name": "TFsecure",
+  "description": "Role-based security operations and gate access management system with single-use visitor passcodes, brute-force lockout protection, and real-time audit logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
