@@ -19,12 +19,16 @@ import {
   getAttachmentByHash,
   getAttachmentByName,
   getAttachmentByPasscodeId,
+  getCsrfToken,
   getNextAvailableBadge,
+  isProfileApproved,
   recordGateDenial,
   recordGuestCheckIn,
   recordGuestCheckOut,
+  sanitizeText,
   sha256Hex,
   useGateRegistry,
+  verifyCsrfToken,
 } from "../lib/gateRegistry";
 
 const fmt = (t: number) =>
@@ -53,6 +57,8 @@ export type UnifiedOnSitePerson = {
   key: string;
   recordId?: string;
   passcodeId?: string;
+  issuedByUserId?: string;
+  hostDepartmentId?: string;
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
@@ -82,14 +88,19 @@ export function useUnifiedOnSiteList() {
   const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
 
   return useMemo(() => {
+    if (!me || !isProfileApproved(me)) {
+      return { activeOnSite: [], checkedOutHistory: [], all: [] };
+    }
+
+    const myDeptId = me.departmentId ?? registry.userDepartmentOverrides[me._id] ?? depts[0]?._id;
+    const myDeptName = myDeptId ? deptName(myDeptId) : "HSE & Security";
+
     const map = new Map<string, UnifiedOnSitePerson>();
     const userByUserId = new Map<string, { name: string; departmentId?: string }>();
     for (const u of users) {
       userByUserId.set(u.userId, { name: u.name, departmentId: u.departmentId });
     }
-    if (me) {
-      userByUserId.set(me.userId, { name: me.name, departmentId: me.departmentId });
-    }
+    userByUserId.set(me.userId, { name: me.name, departmentId: myDeptId });
 
     const passcodesById = new Map(passcodes.map(p => [String(p._id), p]));
 
@@ -105,15 +116,21 @@ export function useUnifiedOnSiteList() {
         (r.codeHash ? getAttachmentByHash(r.codeHash) : undefined) ||
         getAttachmentByName(r.visitorName, r.expiresAt ?? linkedPasscode?.expiresAt);
 
+      const resolvedIssuedBy = r.issuedByUserId || linkedPasscode?.issuedBy || attached?.issuedByUserId;
+      const resolvedDeptId = r.hostDepartmentId || linkedPasscode?.hostDepartmentId || attached?.hostDepartmentId;
+      const resolvedDeptName = r.deptName || (resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General");
+
       map.set(k, {
         key: k,
         recordId: r.id,
         passcodeId: r.passcodeId,
+        issuedByUserId: resolvedIssuedBy,
+        hostDepartmentId: resolvedDeptId,
         visitorName: r.visitorName,
         company: r.company,
         kind: r.kind,
         hostName: r.hostName || (linkedPasscode as any)?.hostName || attached?.hostName || "Staff Host",
-        deptName: r.deptName || "General",
+        deptName: resolvedDeptName,
         badgeNumber: r.badgeNumber,
         idType: r.idType,
         idNumber: r.idNumber,
@@ -143,6 +160,8 @@ export function useUnifiedOnSiteList() {
       map.set(p._id, {
         key: p._id,
         passcodeId: p._id,
+        issuedByUserId: p.issuedBy,
+        hostDepartmentId: resolvedDeptId,
         visitorName: p.visitorName,
         company: p.company || attached?.company,
         kind: p.kind,
@@ -163,11 +182,27 @@ export function useUnifiedOnSiteList() {
       });
     }
 
-    const all = Array.from(map.values()).sort((a, b) => b.checkedInAt - a.checkedInAt);
+    // Strict RBAC & BOLA Filtering:
+    // - admin & security: see all department logs
+    // - report (Department Head): see ONLY their bound department's records
+    // - staff: see ONLY records belonging to their bound department AND individually issued by them
+    const rawList = Array.from(map.values()).sort((a, b) => b.checkedInAt - a.checkedInAt);
+    const scopedList = rawList.filter(item => {
+      if (me.role === "admin" || me.role === "security") return true;
+      const matchesMyDept =
+        (myDeptId && item.hostDepartmentId === myDeptId) ||
+        item.deptName.toLowerCase() === myDeptName.toLowerCase();
+      if (me.role === "report") {
+        return matchesMyDept;
+      }
+      // staff: must match both their individual userId and their bound department
+      return item.issuedByUserId === me.userId && matchesMyDept;
+    });
+
     return {
-      activeOnSite: all.filter(x => !x.checkedOutAt),
-      checkedOutHistory: all.filter(x => !!x.checkedOutAt),
-      all,
+      activeOnSite: scopedList.filter(x => !x.checkedOutAt),
+      checkedOutHistory: scopedList.filter(x => !!x.checkedOutAt),
+      all: scopedList,
     };
   }, [passcodes, depts, users, me, registry]);
 }
@@ -177,6 +212,7 @@ type PendingCandidate = {
   codeHash: string;
   alreadyValidatedOnServer: boolean;
   passcodeId?: string;
+  issuedByUserId?: string;
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
@@ -227,6 +263,15 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
     return users.find(u => u.userId === issuedBy)?.name;
   };
 
+  // RBAC Guard: Only Admin and Security can operate the Gate Check terminal
+  if (me && me.role !== "admin" && me.role !== "security") {
+    return (
+      <div className="panel">
+        <p className="status-err">Access restricted to Security &amp; Administrators.</p>
+      </div>
+    );
+  }
+
   const ERROR_MESSAGES: Record<string, string> = {
     unknown: "Unknown passcode.",
     expired: "Passcode expired.",
@@ -237,6 +282,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
   const handleInspectCode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (!verifyCsrfToken(getCsrfToken())) return;
     const clean = code.trim();
     if (!/^\d{6}$/.test(clean)) return;
 
@@ -325,6 +371,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
           codeHash: hash,
           alreadyValidatedOnServer: false,
           passcodeId: matchingRow?._id ?? localAttachment.passcodeId,
+          issuedByUserId: matchingRow?.issuedBy ?? localAttachment.issuedByUserId,
           visitorName: localAttachment.visitorName,
           company: localAttachment.company || matchingRow?.company,
           kind: localAttachment.kind,
@@ -362,7 +409,6 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       }
 
       const visitorName = r.visitor ?? "Guest";
-      // Match the most recently issued active/just-used passcode for this visitor
       const row = passcodes.find(
         p =>
           p.visitorName.trim().toLowerCase() === visitorName.trim().toLowerCase() &&
@@ -382,6 +428,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         codeHash: hash,
         alreadyValidatedOnServer: true,
         passcodeId: row?._id,
+        issuedByUserId: row?.issuedBy ?? byName?.issuedByUserId,
         visitorName,
         company: row?.company ?? byName?.company,
         kind: row?.kind ?? byName?.kind ?? "visitor",
@@ -406,9 +453,10 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const handleCompleteCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pendingGuest) return;
+    if (!verifyCsrfToken(getCsrfToken())) return;
 
     const now = Date.now();
-    const normalizedBadge = badgeInput.trim().toUpperCase();
+    const normalizedBadge = sanitizeText(badgeInput, 24).toUpperCase();
     if (!normalizedBadge) {
       setBanner({
         type: "denied",
@@ -479,6 +527,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       recordGuestCheckIn({
         passcodeId: pendingGuest.passcodeId,
         codeHash: pendingGuest.codeHash,
+        issuedByUserId: pendingGuest.issuedByUserId,
         visitorName: pendingGuest.visitorName,
         company: pendingGuest.company,
         kind: pendingGuest.kind,
@@ -487,11 +536,11 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         deptName: pendingGuest.deptName,
         phone: pendingGuest.phone,
         idType: idTypeInput,
-        idNumber: idNumberInput.trim().slice(0, 40) || pendingGuest.idNumber,
+        idNumber: sanitizeText(idNumberInput, 40) || pendingGuest.idNumber,
         badgeNumber: normalizedBadge,
-        vehiclePlate: vehicleInput.trim().toUpperCase().slice(0, 24) || pendingGuest.vehiclePlate,
+        vehiclePlate: sanitizeText(vehicleInput, 24).toUpperCase() || pendingGuest.vehiclePlate,
         purpose: pendingGuest.purpose,
-        notes: guardNotes.trim().slice(0, 160) || undefined,
+        notes: sanitizeText(guardNotes, 160) || undefined,
         checkedInAt: checkInTime,
         checkedInBy: operatorName,
         expiresAt: pendingGuest.expiresAt,
@@ -512,17 +561,16 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
   const handleRejectMismatch = async () => {
     if (!pendingGuest) return;
+    if (!verifyCsrfToken(getCsrfToken())) return;
     setBusy(true);
     try {
-      const reason = guardNotes.trim() || "Identity mismatch at gate";
-      // Record gate denial locally so this passcode never appears on site or gets reused
+      const reason = sanitizeText(guardNotes, 160) || "Identity mismatch at gate";
       recordGateDenial({
         passcodeId: pendingGuest.passcodeId,
         codeHash: pendingGuest.codeHash,
         deniedBy: operatorName,
         reason,
       });
-      // Also revoke on the server if not yet marked usedAt
       if (pendingGuest.passcodeId && !pendingGuest.alreadyValidatedOnServer) {
         try {
           await revoke({ id: pendingGuest.passcodeId as Id<"passcodes"> });
@@ -817,6 +865,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                             className="pri"
                             style={{ minHeight: 28, padding: "2px 8px", fontSize: 12 }}
                             onClick={() => {
+                              if (!verifyCsrfToken(getCsrfToken())) return;
                               recordGuestCheckOut({
                                 recordId: person.recordId,
                                 passcodeId: person.passcodeId,
@@ -826,7 +875,9 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                                   visitorName: person.visitorName,
                                   company: person.company,
                                   kind: person.kind,
+                                  issuedByUserId: person.issuedByUserId,
                                   hostName: person.hostName,
+                                  hostDepartmentId: person.hostDepartmentId,
                                   deptName: person.deptName,
                                   checkedInAt: person.checkedInAt,
                                   expiresAt: person.expiresAt,
@@ -878,7 +929,15 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 }
 
 /* ==================== PERSONS ON SITE MODULE ==================== */
-export function PersonsOnSite({ operatorName, canManage }: { operatorName: string; canManage: boolean }) {
+export function PersonsOnSite({
+  operatorName,
+  canManage,
+  canExport,
+}: {
+  operatorName: string;
+  canManage: boolean;
+  canExport: boolean;
+}) {
   const { activeOnSite, checkedOutHistory } = useUnifiedOnSiteList();
   const [view, setView] = useState<"active" | "departed">("active");
   const [search, setSearch] = useState("");
@@ -913,6 +972,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
   }, [sourceList, kindFilter, search]);
 
   const exportRosterCsv = () => {
+    if (!canExport || !verifyCsrfToken(getCsrfToken())) return;
     downloadCsv(
       `persons-on-site-${new Date().toISOString().slice(0, 10)}.csv`,
       [
@@ -951,16 +1011,18 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
     <>
       <div className="page-header">
         <h1>Persons on Site</h1>
-        <div className="page-header-actions">
-          <button type="button" onClick={() => window.print()}>
-            <Printer size={14} />
-            <span>Print</span>
-          </button>
-          <button type="button" onClick={exportRosterCsv}>
-            <Download size={14} />
-            <span>Export CSV</span>
-          </button>
-        </div>
+        {canExport && (
+          <div className="page-header-actions">
+            <button type="button" onClick={() => canExport && window.print()}>
+              <Printer size={14} />
+              <span>Print</span>
+            </button>
+            <button type="button" onClick={exportRosterCsv}>
+              <Download size={14} />
+              <span>Export CSV</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <section className="kpi-strip" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
@@ -973,7 +1035,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
           <span className="kpi-value">{activeOnSite.filter(p => p.kind === "visitor").length}</span>
         </div>
         <div className="kpi-cell">
-          <span className="kpi-label">Contractors & Suppliers</span>
+          <span className="kpi-label">Contractors &amp; Suppliers</span>
           <span className="kpi-value">
             {activeOnSite.filter(p => p.kind === "contractor" || p.kind === "supplier").length}
           </span>
@@ -1079,6 +1141,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
                               className="pri"
                               style={{ minHeight: 28, padding: "2px 10px", fontSize: 12 }}
                               onClick={() => {
+                                if (!verifyCsrfToken(getCsrfToken())) return;
                                 recordGuestCheckOut({
                                   recordId: person.recordId,
                                   passcodeId: person.passcodeId,
@@ -1088,7 +1151,9 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
                                     visitorName: person.visitorName,
                                     company: person.company,
                                     kind: person.kind,
+                                    issuedByUserId: person.issuedByUserId,
                                     hostName: person.hostName,
+                                    hostDepartmentId: person.hostDepartmentId,
                                     deptName: person.deptName,
                                     checkedInAt: person.checkedInAt,
                                     expiresAt: person.expiresAt,

@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { kind } from "./schema";
-import { authorize, can, currentProfile, notifyRoles, notifyUser, writeAudit } from "./lib";
+import { authorize, can, currentProfile, notifyRoles, notifyUser, sanitizeServerText, writeAudit } from "./lib";
 import { DEFAULTS } from "./settings";
 
 const LOCK_WINDOW = 10 * 60_000;
@@ -26,14 +26,15 @@ export const issue = mutation({
     const me = await authorize(ctx, "passcode.issue", a.visitorName);
     if (!me) return { ok: false as const, error: "Your role cannot issue passcodes" };
 
-    const name = a.visitorName.trim().slice(0, 80);
+    const name = sanitizeServerText(a.visitorName, 80);
     if (name.length < 2) return { ok: false as const, error: "Enter a valid visitor full name (at least 2 characters)" };
+    const cleanCompany = sanitizeServerText(a.company, 80) || undefined;
 
     const s = (await ctx.db.query("settings").first()) ?? DEFAULTS;
     const rawHours = Number.isFinite(a.hours) ? Math.round(a.hours) : s.defaultHours;
     const hours = Math.min(Math.max(rawHours, 1), s.maxHours);
 
-    // Server-enforced department binding: never trust arbitrary client departmentId for non-admins.
+    // Server-enforced department binding (BOLA prevention: never trust client-supplied departmentId)
     let resolvedDepartmentId = me.departmentId;
     if (resolvedDepartmentId) {
       const deptDoc = await ctx.db.get(resolvedDepartmentId);
@@ -47,7 +48,7 @@ export const issue = mutation({
       }
     }
 
-    const hostName = me.name;
+    const hostName = sanitizeServerText(me.name, 80);
     const now = Date.now();
     for (let i = 0; i < 5; i++) {
       const r = new Uint32Array(1);
@@ -59,7 +60,7 @@ export const issue = mutation({
         codeHash,
         visitorName: name,
         kind: a.kind,
-        company: a.company?.trim().slice(0, 80) || undefined,
+        company: cleanCompany,
         hostDepartmentId: resolvedDepartmentId,
         hostName,
         issuedBy: me.userId,
@@ -140,11 +141,20 @@ export const revoke = mutation({
     const me = await authorize(ctx, "passcode.revoke", "revoke");
     const p = await ctx.db.get(a.id);
     if (!me || !p) return { ok: false as const, error: me ? "Not found" : "Your role cannot revoke passcodes" };
-    // Staff can only revoke passcodes they issued themselves; Admin and Security can revoke any active passcode
-    if (me.role === "staff" && p.issuedBy !== me.userId) {
-      await writeAudit(ctx, me, "passcode.revoke", false, `unauthorized revoke attempt on ${p.visitorName}`);
-      return { ok: false as const, error: "Staff can only revoke passcodes they issued" };
+
+    // BOLA Prevention:
+    // - "staff": can ONLY revoke passcodes they individually issued within their department
+    // - "report" (Department Head): can ONLY revoke passcodes belonging to their bound department
+    // - "admin" & "security": can revoke any active passcode
+    if (me.role === "staff" && (p.issuedBy !== me.userId || (me.departmentId && p.hostDepartmentId && p.hostDepartmentId !== me.departmentId))) {
+      await writeAudit(ctx, me, "passcode.revoke", false, `BOLA blocked: staff attempted to revoke ${p.visitorName}`);
+      return { ok: false as const, error: "Access denied: you can only manage passcodes you individually issued" };
     }
+    if (me.role === "report" && (!me.departmentId || p.hostDepartmentId !== me.departmentId)) {
+      await writeAudit(ctx, me, "passcode.revoke", false, `BOLA blocked: dept head attempted cross-dept revoke on ${p.visitorName}`);
+      return { ok: false as const, error: "Access denied: department heads can only manage their own department's passcodes" };
+    }
+
     if (p.usedAt || p.revokedAt) return { ok: false as const, error: "Already used or revoked" };
     await ctx.db.patch(a.id, { revokedAt: Date.now() });
     await writeAudit(ctx, me, "passcode.revoke", true, `${p.visitorName} (host: ${p.hostName ?? me.name})`);
@@ -158,16 +168,32 @@ export const list = query({
     const me = await currentProfile(ctx);
     if (!can(me, "passcode.read")) return [];
     const all = await ctx.db.query("passcodes").order("desc").take(100);
-    const rows = can(me, "passcode.list.all") ? all : all.filter(p => p.issuedBy === me!.userId);
     const profiles = await ctx.db.query("profiles").take(200);
     const profileByUserId = new Map(profiles.map(pr => [pr.userId, pr]));
-    return rows.map(({ codeHash: _h, ...rest }) => {
+
+    // Hydrate hostName and hostDepartmentId first so BOLA filtering is exact
+    const hydrated = all.map(({ codeHash: _h, ...rest }) => {
       const issuer = profileByUserId.get(rest.issuedBy);
       return {
         ...rest,
         hostName: rest.hostName ?? issuer?.name ?? "Staff",
         hostDepartmentId: rest.hostDepartmentId ?? issuer?.departmentId,
       };
-    }); // hashes never reach the browser
+    });
+
+    // Strict Server-Side Object-Level Filtering (BOLA Prevention):
+    // 1. Admin & Security: see all departments' passcodes
+    if (can(me, "passcode.list.all")) {
+      return hydrated;
+    }
+    // 2. Department Head ("report"): see ONLY passcodes belonging to their bound department
+    if (can(me, "passcode.list.dept")) {
+      if (!me!.departmentId) return [];
+      return hydrated.filter(p => p.hostDepartmentId === me!.departmentId);
+    }
+    // 3. Staff ("staff"): see ONLY passcodes they individually issued within their bound department
+    return hydrated.filter(
+      p => p.issuedBy === me!.userId && (!me!.departmentId || !p.hostDepartmentId || p.hostDepartmentId === me!.departmentId)
+    );
   },
 });

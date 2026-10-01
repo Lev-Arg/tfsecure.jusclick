@@ -14,10 +14,26 @@ export function TfLogo({
   size = "md",
   lightText = false,
 }: {
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "fill";
   stacked?: boolean;
   lightText?: boolean;
 }) {
+  if (size === "fill") {
+    return (
+      <div
+        className="tf-logo-exact-wrap tf-logo-fill-wrap"
+        title="TF Commodities — A Cocoa Processing Company"
+      >
+        <img
+          src={tfLogoExact}
+          alt="TF Commodities — A Cocoa Processing Company"
+          className={`tf-logo-exact-img tf-logo-fill-img ${lightText ? "tf-logo-force-light" : ""}`}
+          draggable={false}
+        />
+      </div>
+    );
+  }
+
   const height = size === "lg" ? 92 : size === "md" ? 64 : 42;
 
   return (

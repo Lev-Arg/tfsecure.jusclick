@@ -1,11 +1,60 @@
 import { useEffect, useState } from "react";
 
+/**
+ * Strips HTML tags, script protocols, inline event handlers, and control characters to prevent XSS.
+ */
+export function sanitizeText(raw: string | undefined, maxLen = 120): string {
+  if (!raw) return "";
+  return raw
+    .replace(/[<>"'`]/g, "")
+    .replace(/javascript\s*:/gi, "")
+    .replace(/data\s*:/gi, "")
+    .replace(/vbscript\s*:/gi, "")
+    .replace(/on\w+\s*=/gi, "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .trim()
+    .slice(0, maxLen);
+}
+
+/**
+ * Per-session cryptographic anti-CSRF token (256-bit) stored in sessionStorage.
+ */
+const CSRF_STORAGE_KEY = "tfsecure_csrf_token_v1";
+
+export function getCsrfToken(): string {
+  try {
+    const existing = sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (existing && /^[0-9a-f]{64}$/.test(existing)) return existing;
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = Array.from(bytes)
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("");
+    sessionStorage.setItem(CSRF_STORAGE_KEY, token);
+    return token;
+  } catch {
+    return "fallback_same_origin_csrf_token";
+  }
+}
+
+export function verifyCsrfToken(submittedToken: string | null | undefined): boolean {
+  if (!submittedToken) return false;
+  const expected = getCsrfToken();
+  if (submittedToken.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= submittedToken.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 export type GuestAttachment = {
   passcodeId?: string;
   codeHash: string;
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  issuedByUserId?: string;
   hostName: string;
   hostDepartmentId?: string;
   deptName: string;
@@ -25,6 +74,7 @@ export type OnSiteRecord = {
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  issuedByUserId?: string;
   hostName: string;
   hostDepartmentId?: string;
   deptName: string;
@@ -58,6 +108,8 @@ type RegistryState = {
   deniedPasscodeIds: Record<string, GateDenialRecord>;
   deniedCodeHashes: Record<string, GateDenialRecord>;
   userDepartmentOverrides: Record<string, string>;
+  pendingApprovalEmails: Record<string, number>;
+  approvedUserKeys: Record<string, number>;
 };
 
 const REGISTRY_KEY = "tf_commodities_gate_registry_v1";
@@ -73,12 +125,14 @@ function loadRegistry(): RegistryState {
         attachmentsByName: parsed.attachmentsByName ?? {},
         onSiteRecords: (parsed.onSiteRecords ?? []).map((r: any) => ({
           ...r,
-          hostName: r.hostName || "Staff Host",
+          hostName: sanitizeText(r.hostName, 80) || "Staff Host",
         })),
         checkedOutPasscodeIds: parsed.checkedOutPasscodeIds ?? {},
         deniedPasscodeIds: parsed.deniedPasscodeIds ?? {},
         deniedCodeHashes: parsed.deniedCodeHashes ?? {},
         userDepartmentOverrides: parsed.userDepartmentOverrides ?? {},
+        pendingApprovalEmails: parsed.pendingApprovalEmails ?? {},
+        approvedUserKeys: parsed.approvedUserKeys ?? {},
       };
     }
   } catch {
@@ -93,6 +147,8 @@ function loadRegistry(): RegistryState {
     deniedPasscodeIds: {},
     deniedCodeHashes: {},
     userDepartmentOverrides: {},
+    pendingApprovalEmails: {},
+    approvedUserKeys: {},
   };
 }
 
@@ -108,6 +164,71 @@ function saveAndNotify() {
   subscribers.forEach(fn => fn());
 }
 
+export function markEmailPendingApproval(email: string) {
+  const key = email.trim().toLowerCase();
+  if (!key) return;
+  const nextPending = { ...state.pendingApprovalEmails, [key]: Date.now() };
+  const nextApproved = { ...state.approvedUserKeys };
+  delete nextApproved[key];
+  state = {
+    ...state,
+    pendingApprovalEmails: nextPending,
+    approvedUserKeys: nextApproved,
+  };
+  saveAndNotify();
+}
+
+export function approveUserAccount(profileId: string, email?: string) {
+  const nextPending = { ...state.pendingApprovalEmails };
+  const nextApproved = { ...state.approvedUserKeys, [profileId]: Date.now() };
+  if (email) {
+    const cleanEmail = email.trim().toLowerCase();
+    delete nextPending[cleanEmail];
+    nextApproved[cleanEmail] = Date.now();
+  }
+  state = {
+    ...state,
+    pendingApprovalEmails: nextPending,
+    approvedUserKeys: nextApproved,
+  };
+  saveAndNotify();
+}
+
+export function revokeUserApproval(profileId: string, email?: string) {
+  const nextPending = { ...state.pendingApprovalEmails };
+  const nextApproved = { ...state.approvedUserKeys };
+  delete nextApproved[profileId];
+  if (email) {
+    const cleanEmail = email.trim().toLowerCase();
+    delete nextApproved[cleanEmail];
+    nextPending[cleanEmail] = Date.now();
+  }
+  state = {
+    ...state,
+    pendingApprovalEmails: nextPending,
+    approvedUserKeys: nextApproved,
+  };
+  saveAndNotify();
+}
+
+export function isProfileApproved(profile: {
+  _id: string;
+  email: string;
+  role: string;
+  active?: boolean;
+}): boolean {
+  if (profile.active === false) return false;
+  if (profile.role === "admin") return true;
+  const cleanEmail = profile.email.trim().toLowerCase();
+  if (state.approvedUserKeys[profile._id] || state.approvedUserKeys[cleanEmail]) {
+    return true;
+  }
+  if (state.pendingApprovalEmails[cleanEmail]) {
+    return false;
+  }
+  return profile.active === true;
+}
+
 export async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.trim()));
   return Array.from(new Uint8Array(buf))
@@ -117,7 +238,18 @@ export async function sha256Hex(input: string): Promise<string> {
 
 export async function registerIssuedPasscode(code: string, meta: Omit<GuestAttachment, "codeHash">) {
   const codeHash = await sha256Hex(code);
-  const record: GuestAttachment = { ...meta, codeHash };
+  const record: GuestAttachment = {
+    ...meta,
+    visitorName: sanitizeText(meta.visitorName, 80),
+    company: sanitizeText(meta.company, 80) || undefined,
+    hostName: sanitizeText(meta.hostName, 80),
+    deptName: sanitizeText(meta.deptName, 60),
+    phone: sanitizeText(meta.phone, 32) || undefined,
+    idNumber: sanitizeText(meta.idNumber, 40) || undefined,
+    vehiclePlate: sanitizeText(meta.vehiclePlate, 24) || undefined,
+    purpose: sanitizeText(meta.purpose, 120) || undefined,
+    codeHash,
+  };
   const nextByPasscodeId = { ...state.attachmentsByPasscodeId };
   if (meta.passcodeId) {
     nextByPasscodeId[meta.passcodeId] = record;
@@ -126,7 +258,7 @@ export async function registerIssuedPasscode(code: string, meta: Omit<GuestAttac
     ...state,
     attachmentsByHash: { ...state.attachmentsByHash, [codeHash]: record },
     attachmentsByPasscodeId: nextByPasscodeId,
-    attachmentsByName: { ...state.attachmentsByName, [meta.visitorName.trim().toLowerCase()]: record },
+    attachmentsByName: { ...state.attachmentsByName, [record.visitorName.toLowerCase()]: record },
   };
   saveAndNotify();
 }
@@ -156,7 +288,6 @@ export function getAttachmentByPasscodeId(passcodeId?: string): GuestAttachment 
 
 export function getAttachmentByName(visitorName: string, expectedExpiresAt?: number): GuestAttachment | undefined {
   const key = visitorName.trim().toLowerCase();
-  // Prefer an exact passcode match by name + expiration proximity across all stored hash attachments
   if (expectedExpiresAt !== undefined) {
     const allByHash = Object.values(state.attachmentsByHash);
     const exact = allByHash.find(
@@ -175,15 +306,14 @@ export function recordGateDenial(params: {
 }) {
   const entry: GateDenialRecord = {
     deniedAt: Date.now(),
-    deniedBy: params.deniedBy,
-    reason: params.reason?.trim() || "Identity mismatch at gate",
+    deniedBy: sanitizeText(params.deniedBy, 80),
+    reason: sanitizeText(params.reason, 160) || "Identity mismatch at gate",
   };
   const nextIds = { ...state.deniedPasscodeIds };
   const nextHashes = { ...state.deniedCodeHashes };
   if (params.passcodeId) nextIds[params.passcodeId] = entry;
   if (params.codeHash) nextHashes[params.codeHash] = entry;
 
-  // Also ensure any active on-site record for this passcode is removed if it existed
   const nextOnSite = state.onSiteRecords.filter(
     r =>
       !(
@@ -219,7 +349,15 @@ export function recordGuestCheckIn(record: Omit<OnSiteRecord, "id">): OnSiteReco
   );
   const full: OnSiteRecord = {
     ...record,
-    badgeNumber: record.badgeNumber.trim().toUpperCase() || "TFC-GATE",
+    visitorName: sanitizeText(record.visitorName, 80),
+    company: sanitizeText(record.company, 80) || undefined,
+    hostName: sanitizeText(record.hostName, 80),
+    deptName: sanitizeText(record.deptName, 60),
+    badgeNumber: sanitizeText(record.badgeNumber, 24).toUpperCase() || "TFC-GATE",
+    idNumber: sanitizeText(record.idNumber, 40) || undefined,
+    vehiclePlate: sanitizeText(record.vehiclePlate, 24).toUpperCase() || undefined,
+    purpose: sanitizeText(record.purpose, 120) || undefined,
+    notes: sanitizeText(record.notes, 160) || undefined,
     id:
       existingIdx >= 0
         ? state.onSiteRecords[existingIdx].id
@@ -248,13 +386,17 @@ export function recordGuestCheckOut(params: {
     visitorName: string;
     company?: string;
     kind: "visitor" | "contractor" | "supplier";
+    issuedByUserId?: string;
     hostName: string;
+    hostDepartmentId?: string;
     deptName: string;
     checkedInAt: number;
     expiresAt?: number;
   };
 }) {
   const now = Date.now();
+  const cleanNotes = sanitizeText(params.checkoutNotes, 160) || "Checked out";
+  const cleanBy = sanitizeText(params.checkedOutBy, 80);
   const nextList = [...state.onSiteRecords];
   const idx = nextList.findIndex(
     r =>
@@ -267,26 +409,28 @@ export function recordGuestCheckOut(params: {
     nextList[idx] = {
       ...nextList[idx],
       checkedOutAt: Math.max(now, nextList[idx].checkedInAt),
-      checkedOutBy: params.checkedOutBy,
-      checkoutNotes: params.checkoutNotes,
+      checkedOutBy: cleanBy,
+      checkoutNotes: cleanNotes,
     };
   } else if (params.fallbackVisitor) {
     nextList.unshift({
       id: `onsite_${now}`,
       passcodeId: params.passcodeId,
-      visitorName: params.fallbackVisitor.visitorName,
-      company: params.fallbackVisitor.company,
+      visitorName: sanitizeText(params.fallbackVisitor.visitorName, 80),
+      company: sanitizeText(params.fallbackVisitor.company, 80) || undefined,
       kind: params.fallbackVisitor.kind,
-      hostName: params.fallbackVisitor.hostName,
-      deptName: params.fallbackVisitor.deptName,
+      issuedByUserId: params.fallbackVisitor.issuedByUserId,
+      hostName: sanitizeText(params.fallbackVisitor.hostName, 80),
+      hostDepartmentId: params.fallbackVisitor.hostDepartmentId,
+      deptName: sanitizeText(params.fallbackVisitor.deptName, 60),
       idType: "Verified at Gate",
       badgeNumber: "GATE-PASS",
       checkedInAt: params.fallbackVisitor.checkedInAt,
       expiresAt: params.fallbackVisitor.expiresAt,
       checkedInBy: "Gate Security",
       checkedOutAt: Math.max(now, params.fallbackVisitor.checkedInAt),
-      checkedOutBy: params.checkedOutBy,
-      checkoutNotes: params.checkoutNotes,
+      checkedOutBy: cleanBy,
+      checkoutNotes: cleanNotes,
     });
   }
 
@@ -294,8 +438,8 @@ export function recordGuestCheckOut(params: {
   if (params.passcodeId) {
     nextCheckedOutIds[params.passcodeId] = {
       checkedOutAt: now,
-      checkedOutBy: params.checkedOutBy,
-      checkoutNotes: params.checkoutNotes,
+      checkedOutBy: cleanBy,
+      checkoutNotes: cleanNotes,
     };
   }
 
@@ -325,7 +469,6 @@ export function useGateRegistry() {
 export function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
   const escapeCell = (val: string | number) => {
     let s = String(val ?? "");
-    // Mitigate CSV Formula Injection (cells starting with =, +, -, @, tab, or CR)
     if (/^[=+\-@\t\r]/.test(s)) {
       s = `'${s}`;
     }

@@ -3,11 +3,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { role } from "./schema";
-import { authorize, can, currentProfile, writeAudit } from "./lib";
+import { authorize, can, currentProfile, notifyRoles, sanitizeServerText, writeAudit } from "./lib";
 
 export const me = query({ args: {}, handler: ctx => currentProfile(ctx) });
 
-// Called after sign-in. First account becomes admin; everyone else starts as read-only "report".
+// Called after sign-in. First account becomes active admin; all subsequent new users start inactive (active: false)
+// and require explicit administrator approval before they can log in or use the system.
 export const ensureProfile = mutation({
   args: {},
   handler: async ctx => {
@@ -15,7 +16,6 @@ export const ensureProfile = mutation({
     if (!userId) return null;
     const existing = await currentProfile(ctx);
     if (existing) {
-      // If existing user has no department bound yet and departments exist, bind default department
       if (!existing.departmentId) {
         const defaultDept = await ctx.db.query("departments").first();
         if (defaultDept) {
@@ -27,21 +27,35 @@ export const ensureProfile = mutation({
     const user = (await ctx.db.get(userId)) as { name?: string; email?: string } | null;
     const first = (await ctx.db.query("profiles").first()) === null;
     const defaultDept = await ctx.db.query("departments").first();
+    const cleanName = sanitizeServerText(user?.name || user?.email || "User", 80);
+    const cleanEmail = sanitizeServerText(user?.email ?? "", 120).toLowerCase();
+
     await ctx.db.insert("profiles", {
       userId,
-      name: (user?.name?.trim() || user?.email?.trim() || "User").slice(0, 80),
-      email: (user?.email ?? "").trim().toLowerCase(),
-      role: first ? "admin" : "report",
-      active: true,
+      name: cleanName,
+      email: cleanEmail,
+      role: first ? "admin" : "staff",
+      // Security Control: New users (except initial bootstrap admin) remain inactive until approved by Admin
+      active: first ? true : false,
       departmentId: defaultDept?._id,
     });
+
+    const createdProfile = await currentProfile(ctx);
     await writeAudit(
       ctx,
-      await currentProfile(ctx),
+      createdProfile,
       "profile.create",
       true,
-      first ? "first user -> admin" : "default role: report"
+      first ? "first user -> active admin" : `pending admin approval (${cleanEmail})`
     );
+    if (!first) {
+      await notifyRoles(
+        ctx,
+        ["admin"],
+        "security",
+        `New user registration pending approval: ${cleanName} (${cleanEmail})`
+      );
+    }
     return null;
   },
 });
@@ -77,7 +91,7 @@ export const setRole = mutation({
     adminEdit(ctx, a.profileId, `role -> ${a.role}`, async t => {
       if (t.role === "admin" && a.role !== "admin") {
         const allProfiles = await ctx.db.query("profiles").take(200);
-        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active !== false);
+        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
         if (activeAdmins.length <= 1) {
           return "Cannot demote the last active administrator";
         }
@@ -90,10 +104,10 @@ export const setRole = mutation({
 export const setActive = mutation({
   args: { profileId: v.id("profiles"), active: v.boolean() },
   handler: (ctx, a) =>
-    adminEdit(ctx, a.profileId, a.active ? "activated" : "deactivated", async t => {
+    adminEdit(ctx, a.profileId, a.active ? "approved / activated" : "deactivated", async t => {
       if (t.role === "admin" && !a.active) {
         const allProfiles = await ctx.db.query("profiles").take(200);
-        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active !== false);
+        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
         if (activeAdmins.length <= 1) {
           return "Cannot deactivate the last active administrator";
         }

@@ -253,6 +253,8 @@ button.ghost-btn:hover:not(:disabled) {
 .system-title-group {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   gap: 2px;
 }
 
@@ -288,51 +290,31 @@ button.ghost-btn:hover:not(:disabled) {
 
 .auth-checkpoint-panel {
   position: relative;
-  padding: 32px;
+  padding: 28px;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
   color: #f8fafc;
   background: linear-gradient(
     180deg,
-    rgba(7, 11, 18, 0.42) 0%,
-    rgba(7, 11, 18, 0.12) 45%,
-    rgba(7, 11, 18, 0.62) 100%
+    rgba(7, 11, 18, 0.56) 0%,
+    rgba(7, 11, 18, 0.34) 50%,
+    rgba(7, 11, 18, 0.68) 100%
   );
   border-right: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 .auth-org-badge {
-  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  display: flex;
   align-items: center;
   justify-content: center;
-  align-self: flex-start;
-  padding: 10px 14px;
-  background: rgba(9, 13, 22, 0.72);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
-}
-
-.auth-showcase-bottom {
-  background: rgba(9, 13, 22, 0.78);
-  backdrop-filter: blur(10px);
+  padding: 24px;
+  background: rgba(9, 13, 22, 0.52);
+  backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 10px;
-  padding: 16px 20px;
-}
-
-.auth-showcase-bottom h2 {
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: #ffffff;
-  margin-bottom: 4px;
-}
-
-.auth-showcase-bottom p {
-  font-size: 13px;
-  color: #cbd5e1;
+  border-radius: 12px;
 }
 
 .auth-form-pane {
@@ -356,7 +338,8 @@ button.ghost-btn:hover:not(:disabled) {
 .auth-card-logo-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  text-align: center;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
@@ -364,6 +347,10 @@ button.ghost-btn:hover:not(:disabled) {
 .auth-card-org-logo {
   display: inline-flex;
   align-items: center;
+}
+
+.auth-card-header {
+  text-align: center;
 }
 
 .auth-card-header h1 {
@@ -400,6 +387,8 @@ button.ghost-btn:hover:not(:disabled) {
     justify-content: center;
   }
   .auth-org-badge {
+    width: auto;
+    height: auto;
     align-self: center;
     padding: 12px 20px;
     background: rgba(9, 13, 22, 0.55);
@@ -409,9 +398,10 @@ button.ghost-btn:hover:not(:disabled) {
     filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.5));
   }
   .auth-org-badge .tf-logo-exact-img {
+    width: auto !important;
     height: 96px !important;
+    max-height: 96px !important;
   }
-  .auth-showcase-bottom,
   .auth-card-org-logo {
     display: none !important;
   }
@@ -1133,8 +1123,24 @@ tbody tr:hover {
   flex-shrink: 0;
 }
 
+.tf-logo-fill-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .tf-logo-exact-img {
   transition: filter 120ms ease;
+}
+
+.tf-logo-fill-img {
+  width: 100%;
+  height: 100%;
+  max-height: 380px;
+  object-fit: contain;
+  display: block;
 }
 
 /* tflogo1.png has white foreground on transparent background; darken cleanly on light surfaces */
