@@ -1,15 +1,15 @@
 :root,
 [data-theme="light"] {
   --bg: #f1f5f9;
-  --app-overlay: rgba(241, 245, 249, 0.82);
-  --surface: rgba(255, 255, 255, 0.95);
+  --app-overlay: rgba(241, 245, 249, 0.72);
+  --surface: rgba(255, 255, 255, 0.94);
   --surface-solid: #ffffff;
   --surface-subtle: rgba(241, 245, 249, 0.94);
   --surface-hover: rgba(248, 250, 252, 0.98);
   --ink: #0f172a;
   --ink-secondary: #334155;
   --mute: #64748b;
-  --line: rgba(203, 213, 225, 0.8);
+  --line: rgba(203, 213, 225, 0.85);
   --line-strong: #cbd5e1;
   --sig: #d97706;
   --sig-ink: #ffffff;
@@ -27,12 +27,12 @@
   --primary-ink: #ffffff;
   --primary-hover: #1e293b;
   --shadow-sm: 0 2px 8px 0 rgba(15, 23, 42, 0.06);
-  --shadow-pop: 0 16px 40px -4px rgba(15, 23, 42, 0.18);
+  --shadow-pop: 0 20px 50px -8px rgba(15, 23, 42, 0.32);
 }
 
 [data-theme="dark"] {
   --bg: #090d16;
-  --app-overlay: rgba(9, 13, 22, 0.84);
+  --app-overlay: rgba(9, 13, 22, 0.74);
   --surface: rgba(17, 24, 39, 0.92);
   --surface-solid: #111827;
   --surface-subtle: rgba(30, 41, 59, 0.9);
@@ -40,7 +40,7 @@
   --ink: #f8fafc;
   --ink-secondary: #cbd5e1;
   --mute: #94a3b8;
-  --line: rgba(51, 65, 85, 0.8);
+  --line: rgba(51, 65, 85, 0.85);
   --line-strong: #334155;
   --sig: #f59e0b;
   --sig-ink: #0f172a;
@@ -58,7 +58,7 @@
   --primary-ink: #0f172a;
   --primary-hover: #fbbf24;
   --shadow-sm: 0 4px 14px 0 rgba(0, 0, 0, 0.35);
-  --shadow-pop: 0 20px 44px -4px rgba(0, 0, 0, 0.65);
+  --shadow-pop: 0 24px 56px -8px rgba(0, 0, 0, 0.72);
 }
 
 * {
@@ -75,7 +75,7 @@ body,
   overflow: hidden;
   overscroll-behavior: none;
   background-color: var(--bg);
-  background-image: url("/src/assets/images/corporate_facility_bg_1790827662470.jpg");
+  background-image: url("/corporate_facility_bg.jpg");
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -125,6 +125,25 @@ textarea:focus {
   outline: none;
   border-color: var(--sig);
   box-shadow: 0 0 0 3px var(--sig-soft);
+}
+
+input:disabled,
+input[readonly] {
+  background: var(--surface-subtle);
+  color: var(--ink-secondary);
+  cursor: not-allowed;
+  font-weight: 600;
+}
+
+.header-app-title {
+  font-family: "Plus Jakarta Sans", sans-serif;
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1;
+  white-space: nowrap;
 }
 
 button {
@@ -198,66 +217,125 @@ button.ghost-btn:hover:not(:disabled) {
   outline-offset: 2px;
 }
 
-/* ==================== CLEAN, STABLE CHECKPOINT LOGIN PAGE ==================== */
+/* ==================== REDESIGNED HOMEPAGE / LOGIN PORTAL (FACILITY BG + CHECKPOINT SHOWCASE) ==================== */
 .auth-shell {
+  position: fixed;
+  inset: 0;
   width: 100vw;
   height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.36) 50%, rgba(7, 11, 18, 0.58) 100%);
+  padding: 20px 28px;
+}
+
+.auth-header-bar {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 18px;
+  background: rgba(9, 13, 22, 0.76);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.system-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.system-title-kicker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mute);
+  line-height: 1;
+}
+
+.auth-main-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 0;
+}
+
+.auth-portal-frame {
+  width: 100%;
+  max-width: 1080px;
+  min-height: 540px;
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  background-color: #070b12;
-  background-image: linear-gradient(
-      90deg,
-      rgba(7, 11, 18, 0.35) 0%,
-      rgba(7, 11, 18, 0.65) 55%,
-      rgba(7, 11, 18, 0.92) 100%
-    ),
-    url("/src/assets/images/security_checkpoint_login_1790827675252.jpg");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+  grid-template-columns: 1.2fr 0.85fr;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 28px 70px -12px rgba(0, 0, 0, 0.68);
+  background: var(--surface);
 }
 
-@media (max-width: 960px) {
-  .auth-shell {
-    grid-template-columns: 1fr;
-    background-image: linear-gradient(180deg, rgba(7, 11, 18, 0.72) 0%, rgba(7, 11, 18, 0.92) 100%),
-      url("/src/assets/images/security_checkpoint_login_1790827675252.jpg");
-  }
-  .auth-showcase {
-    display: none !important;
-  }
-}
-
-.auth-showcase {
-  padding: 48px 56px;
+.auth-checkpoint-panel {
+  position: relative;
+  padding: 32px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   color: #f8fafc;
+  background-color: #0b111e;
+  background-image: linear-gradient(
+      180deg,
+      rgba(7, 11, 18, 0.58) 0%,
+      rgba(7, 11, 18, 0.08) 45%,
+      rgba(7, 11, 18, 0.78) 100%
+    ),
+    url("/security_checkpoint_login.jpg");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border-right: 1px solid var(--line);
+}
+
+.auth-org-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  align-self: flex-start;
+  padding: 10px 14px;
+  background: rgba(9, 13, 22, 0.72);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
 }
 
 .auth-showcase-bottom {
-  max-width: 480px;
-  background: rgba(9, 13, 22, 0.72);
+  background: rgba(9, 13, 22, 0.78);
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 10px;
-  padding: 20px 24px;
+  padding: 16px 20px;
 }
 
 .auth-showcase-bottom h2 {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   color: #ffffff;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .auth-showcase-bottom p {
-  font-size: 13.5px;
+  font-size: 13px;
   color: #cbd5e1;
 }
 
@@ -266,18 +344,14 @@ button.ghost-btn:hover:not(:disabled) {
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  padding: 24px;
+  padding: 32px 28px;
+  background: var(--surface);
+  backdrop-filter: blur(16px);
 }
 
 .auth-card {
   width: 100%;
-  max-width: 400px;
-  background: var(--surface);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  padding: 28px;
-  box-shadow: var(--shadow-pop);
+  max-width: 370px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -286,15 +360,31 @@ button.ghost-btn:hover:not(:disabled) {
 .auth-card-logo-bar {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
 }
 
 .auth-card-header h1 {
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+
+@media (max-width: 900px) {
+  .auth-shell {
+    padding: 14px;
+  }
+  .auth-portal-frame {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  .auth-checkpoint-panel {
+    min-height: 220px;
+    padding: 20px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
 }
 
 .field-group {

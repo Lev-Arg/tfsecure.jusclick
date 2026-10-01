@@ -10,6 +10,7 @@ export default defineSchema({
     .index("by_user", ["userId"]),
   passcodes: defineTable({
     codeHash: v.string(), visitorName: v.string(), kind, company: v.optional(v.string()), hostDepartmentId: v.optional(v.id("departments")),
+    hostName: v.optional(v.string()),
     issuedBy: v.id("users"), expiresAt: v.number(), usedAt: v.optional(v.number()), revokedAt: v.optional(v.number()),
   }).index("by_hash", ["codeHash"]),
   gateEvents: defineTable({ passcodeId: v.optional(v.id("passcodes")), guardId: v.id("users"), result: v.string(), at: v.number() }),

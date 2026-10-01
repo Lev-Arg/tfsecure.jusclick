@@ -19,12 +19,24 @@ export const issue = mutation({
     if (!name) return { ok: false as const, error: "Enter the visitor's name" };
     const s = (await ctx.db.query("settings").first()) ?? DEFAULTS;
     const hours = Math.min(Math.max(a.hours, 1), s.maxHours);
+    // Server-side department binding: always use the issuing user's bound department first
+    const resolvedDepartmentId = me.departmentId ?? a.hostDepartmentId;
+    const hostName = me.name;
     for (let i = 0; i < 5; i++) {
       const r = new Uint32Array(1); crypto.getRandomValues(r);
       const code = String(100000 + (r[0] % 900000)), codeHash = await sha256(code);
       if (await ctx.db.query("passcodes").withIndex("by_hash", q => q.eq("codeHash", codeHash)).first()) continue;
-      await ctx.db.insert("passcodes", { codeHash, visitorName: name, kind: a.kind, company: a.company?.trim().slice(0, 80) || undefined, hostDepartmentId: a.hostDepartmentId, issuedBy: me.userId, expiresAt: Date.now() + hours * 3600_000 });
-      await writeAudit(ctx, me, "passcode.issue", true, `${a.kind}: ${name}, ${hours}h`);
+      await ctx.db.insert("passcodes", {
+        codeHash,
+        visitorName: name,
+        kind: a.kind,
+        company: a.company?.trim().slice(0, 80) || undefined,
+        hostDepartmentId: resolvedDepartmentId,
+        hostName,
+        issuedBy: me.userId,
+        expiresAt: Date.now() + hours * 3600_000,
+      });
+      await writeAudit(ctx, me, "passcode.issue", true, `${a.kind}: ${name} (host: ${hostName}), ${hours}h`);
       return { ok: true as const, code }; // plaintext shown once; only the hash is stored
     }
     return { ok: false as const, error: "Could not generate a unique code, try again" };
@@ -80,6 +92,15 @@ export const list = query({
     if (!can(me, "passcode.issue")) return [];
     const all = await ctx.db.query("passcodes").order("desc").take(100);
     const rows = can(me, "passcode.list.all") ? all : all.filter(p => p.issuedBy === me!.userId);
-    return rows.map(({ codeHash: _h, ...rest }) => rest); // hashes never reach the browser
+    const profiles = await ctx.db.query("profiles").collect();
+    const profileByUserId = new Map(profiles.map(pr => [pr.userId, pr]));
+    return rows.map(({ codeHash: _h, ...rest }) => {
+      const issuer = profileByUserId.get(rest.issuedBy);
+      return {
+        ...rest,
+        hostName: rest.hostName ?? issuer?.name ?? "Staff",
+        hostDepartmentId: rest.hostDepartmentId ?? issuer?.departmentId,
+      };
+    }); // hashes never reach the browser
   },
 });

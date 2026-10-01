@@ -5,6 +5,7 @@ export type GuestAttachment = {
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  hostName: string;
   hostDepartmentId?: string;
   deptName: string;
   phone?: string;
@@ -23,6 +24,7 @@ export type OnSiteRecord = {
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  hostName: string;
   hostDepartmentId?: string;
   deptName: string;
   phone?: string;
@@ -44,6 +46,7 @@ type RegistryState = {
   attachmentsByName: Record<string, GuestAttachment>;
   onSiteRecords: OnSiteRecord[];
   checkedOutPasscodeIds: Record<string, { checkedOutAt: number; checkedOutBy: string; checkoutNotes?: string }>;
+  userDepartmentOverrides: Record<string, string>;
 };
 
 const REGISTRY_KEY = "tf_commodities_gate_registry_v1";
@@ -56,8 +59,12 @@ function loadRegistry(): RegistryState {
       return {
         attachmentsByHash: parsed.attachmentsByHash ?? {},
         attachmentsByName: parsed.attachmentsByName ?? {},
-        onSiteRecords: parsed.onSiteRecords ?? [],
+        onSiteRecords: (parsed.onSiteRecords ?? []).map((r: any) => ({
+          ...r,
+          hostName: r.hostName || "Staff Host",
+        })),
         checkedOutPasscodeIds: parsed.checkedOutPasscodeIds ?? {},
+        userDepartmentOverrides: parsed.userDepartmentOverrides ?? {},
       };
     }
   } catch {
@@ -68,6 +75,7 @@ function loadRegistry(): RegistryState {
     attachmentsByName: {},
     onSiteRecords: [],
     checkedOutPasscodeIds: {},
+    userDepartmentOverrides: {},
   };
 }
 
@@ -97,6 +105,20 @@ export async function registerIssuedPasscode(code: string, meta: Omit<GuestAttac
     ...state,
     attachmentsByHash: { ...state.attachmentsByHash, [codeHash]: record },
     attachmentsByName: { ...state.attachmentsByName, [meta.visitorName.trim().toLowerCase()]: record },
+  };
+  saveAndNotify();
+}
+
+export function setUserDepartmentOverride(profileId: string, departmentId: string | undefined) {
+  const next = { ...state.userDepartmentOverrides };
+  if (departmentId) {
+    next[profileId] = departmentId;
+  } else {
+    delete next[profileId];
+  }
+  state = {
+    ...state,
+    userDepartmentOverrides: next,
   };
   saveAndNotify();
 }
@@ -143,6 +165,7 @@ export function recordGuestCheckOut(params: {
     visitorName: string;
     company?: string;
     kind: "visitor" | "contractor" | "supplier";
+    hostName: string;
     deptName: string;
     checkedInAt: number;
   };
@@ -170,6 +193,7 @@ export function recordGuestCheckOut(params: {
       visitorName: params.fallbackVisitor.visitorName,
       company: params.fallbackVisitor.company,
       kind: params.fallbackVisitor.kind,
+      hostName: params.fallbackVisitor.hostName,
       deptName: params.fallbackVisitor.deptName,
       idType: "Verified at Gate",
       badgeNumber: "GATE-PASS",

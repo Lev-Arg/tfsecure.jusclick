@@ -52,6 +52,7 @@ export type UnifiedOnSitePerson = {
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  hostName: string;
   deptName: string;
   badgeNumber: string;
   idType: string;
@@ -69,15 +70,25 @@ export type UnifiedOnSitePerson = {
 export function useUnifiedOnSiteList() {
   const passcodes = useQuery(api.passcodes.list) ?? [];
   const depts = useQuery(api.departments.list) ?? [];
+  const users = useQuery(api.users.list) ?? [];
+  const me = useQuery(api.users.me);
   const registry = useGateRegistry();
 
   const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
 
   return useMemo(() => {
     const map = new Map<string, UnifiedOnSitePerson>();
+    const userByUserId = new Map<string, { name: string; departmentId?: string }>();
+    for (const u of users) {
+      userByUserId.set(u.userId, { name: u.name, departmentId: u.departmentId });
+    }
+    if (me) {
+      userByUserId.set(me.userId, { name: me.name, departmentId: me.departmentId });
+    }
 
     for (const r of registry.onSiteRecords) {
       const k = r.passcodeId || r.id;
+      const attached = getAttachmentByName(r.visitorName);
       map.set(k, {
         key: k,
         recordId: r.id,
@@ -85,6 +96,7 @@ export function useUnifiedOnSiteList() {
         visitorName: r.visitorName,
         company: r.company,
         kind: r.kind,
+        hostName: r.hostName || attached?.hostName || "Staff Host",
         deptName: r.deptName || "General",
         badgeNumber: r.badgeNumber,
         idType: r.idType,
@@ -104,14 +116,18 @@ export function useUnifiedOnSiteList() {
       if (!p.usedAt) continue;
       if (map.has(p._id)) continue;
       const attached = getAttachmentByName(p.visitorName);
+      const issuer = userByUserId.get(p.issuedBy);
       const co = registry.checkedOutPasscodeIds[p._id];
+      const resolvedHostName = (p as any).hostName || attached?.hostName || issuer?.name || "Staff Host";
+      const resolvedDeptId = p.hostDepartmentId || issuer?.departmentId || attached?.hostDepartmentId;
       map.set(p._id, {
         key: p._id,
         passcodeId: p._id,
         visitorName: p.visitorName,
         company: p.company || attached?.company,
         kind: p.kind,
-        deptName: p.hostDepartmentId ? deptName(p.hostDepartmentId) : attached?.deptName ?? "General",
+        hostName: resolvedHostName,
+        deptName: resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General",
         badgeNumber: "GATE-PASS",
         idType: "Passcode",
         idNumber: attached?.idNumber,
@@ -132,7 +148,7 @@ export function useUnifiedOnSiteList() {
       checkedOutHistory: all.filter(x => !!x.checkedOutAt),
       all,
     };
-  }, [passcodes, depts, registry]);
+  }, [passcodes, depts, users, me, registry]);
 }
 
 type PendingCandidate = {
@@ -143,6 +159,7 @@ type PendingCandidate = {
   visitorName: string;
   company?: string;
   kind: "visitor" | "contractor" | "supplier";
+  hostName: string;
   hostDepartmentId?: string;
   deptName: string;
   phone?: string;
@@ -156,6 +173,8 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const validate = useMutation(api.passcodes.validate);
   const passcodes = useQuery(api.passcodes.list) ?? [];
   const depts = useQuery(api.departments.list) ?? [];
+  const users = useQuery(api.users.list) ?? [];
+  const me = useQuery(api.users.me);
   const { activeOnSite } = useUnifiedOnSiteList();
 
   const [code, setCode] = useState("");
@@ -178,7 +197,12 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const [checkoutConfirmKey, setCheckoutConfirmKey] = useState<string | null>(null);
   const [checkoutNote, setCheckoutNote] = useState("");
 
-  const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "Any";
+  const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
+  const hostNameForIssuer = (issuedBy?: string) => {
+    if (!issuedBy) return undefined;
+    if (me && me.userId === issuedBy) return me.name;
+    return users.find(u => u.userId === issuedBy)?.name;
+  };
 
   const ERROR_MESSAGES: Record<string, string> = {
     unknown: "Unknown passcode.",
@@ -243,6 +267,11 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
           visitorName: localAttachment.visitorName,
           company: localAttachment.company || matchingRow?.company,
           kind: localAttachment.kind,
+          hostName:
+            localAttachment.hostName ||
+            (matchingRow as any)?.hostName ||
+            hostNameForIssuer(matchingRow?.issuedBy) ||
+            "Staff Host",
           hostDepartmentId: localAttachment.hostDepartmentId || matchingRow?.hostDepartmentId,
           deptName: matchingRow?.hostDepartmentId ? deptName(matchingRow.hostDepartmentId) : localAttachment.deptName,
           phone: localAttachment.phone,
@@ -289,6 +318,11 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         visitorName,
         company: row?.company ?? byName?.company,
         kind: row?.kind ?? byName?.kind ?? "visitor",
+        hostName:
+          (row as any)?.hostName ??
+          byName?.hostName ??
+          hostNameForIssuer(row?.issuedBy) ??
+          operatorName,
         hostDepartmentId: row?.hostDepartmentId ?? byName?.hostDepartmentId,
         deptName: row?.hostDepartmentId ? deptName(row.hostDepartmentId) : byName?.deptName ?? "General",
         phone: byName?.phone,
@@ -328,6 +362,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         visitorName: pendingGuest.visitorName,
         company: pendingGuest.company,
         kind: pendingGuest.kind,
+        hostName: pendingGuest.hostName,
         hostDepartmentId: pendingGuest.hostDepartmentId,
         deptName: pendingGuest.deptName,
         phone: pendingGuest.phone,
@@ -344,7 +379,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       setBanner({
         type: "granted",
         title: "CHECKED IN",
-        text: `${pendingGuest.visitorName} registered on site (${badgeInput}).`,
+        text: `${pendingGuest.visitorName} (Host: ${pendingGuest.hostName}) registered on site (${badgeInput}).`,
         at: now,
       });
       setPendingGuest(null);
@@ -397,7 +432,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
           <div className="dossier-grid">
             <div>
-              <div className="dossier-field-label">Name</div>
+              <div className="dossier-field-label">Guest Name</div>
               <div className="dossier-field-value">{pendingGuest.visitorName}</div>
             </div>
             <div>
@@ -409,6 +444,10 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
               <div className="dossier-field-value" style={{ textTransform: "capitalize" }}>
                 {pendingGuest.kind}
               </div>
+            </div>
+            <div>
+              <div className="dossier-field-label">Host Name</div>
+              <div className="dossier-field-value">{pendingGuest.hostName}</div>
             </div>
             <div>
               <div className="dossier-field-label">Department</div>
@@ -604,6 +643,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Host</th>
                   <th>Dept</th>
                   <th>Badge</th>
                   <th>Checked In</th>
@@ -617,6 +657,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                       <div style={{ fontWeight: 600 }}>{person.visitorName}</div>
                       {person.company && <div className="meta-inline">{person.company}</div>}
                     </td>
+                    <td>{person.hostName}</td>
                     <td>{person.deptName}</td>
                     <td className="mono">{person.badgeNumber}</td>
                     <td className="mono">{fmt(person.checkedInAt)}</td>
@@ -643,6 +684,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                                   visitorName: person.visitorName,
                                   company: person.company,
                                   kind: person.kind,
+                                  hostName: person.hostName,
                                   deptName: person.deptName,
                                   checkedInAt: person.checkedInAt,
                                 },
@@ -717,6 +759,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
         const match =
           p.visitorName.toLowerCase().includes(q) ||
           (p.company ?? "").toLowerCase().includes(q) ||
+          p.hostName.toLowerCase().includes(q) ||
           p.deptName.toLowerCase().includes(q) ||
           p.badgeNumber.toLowerCase().includes(q) ||
           (p.vehiclePlate ?? "").toLowerCase().includes(q);
@@ -729,11 +772,24 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
   const exportRosterCsv = () => {
     downloadCsv(
       `persons-on-site-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Name", "Company", "Type", "Department", "Badge", "ID", "Vehicle", "Checked In", "Checked Out", "Status"],
+      [
+        "Name",
+        "Company",
+        "Type",
+        "Host Name",
+        "Department",
+        "Badge",
+        "ID",
+        "Vehicle",
+        "Checked In",
+        "Checked Out",
+        "Status",
+      ],
       filtered.map(p => [
         p.visitorName,
         p.company ?? "",
         p.kind,
+        p.hostName,
         p.deptName,
         p.badgeNumber,
         `${p.idType}${p.idNumber ? ` (${p.idNumber})` : ""}`,
@@ -799,7 +855,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search name, company, badge…"
+                placeholder="Search guest, host, company, badge…"
               />
             </div>
           </div>
@@ -821,6 +877,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
                 <th>Name</th>
                 <th>Company</th>
                 <th>Type</th>
+                <th>Host Name</th>
                 <th>Department</th>
                 <th>Badge / ID</th>
                 <th>Vehicle</th>
@@ -838,6 +895,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
                   </td>
                   <td>{person.company || <span className="status-mute">—</span>}</td>
                   <td style={{ textTransform: "capitalize" }}>{person.kind}</td>
+                  <td style={{ fontWeight: 500 }}>{person.hostName}</td>
                   <td>{person.deptName}</td>
                   <td>
                     <span className="mono" style={{ fontWeight: 600 }}>{person.badgeNumber}</span>
@@ -879,6 +937,7 @@ export function PersonsOnSite({ operatorName, canManage }: { operatorName: strin
                                   visitorName: person.visitorName,
                                   company: person.company,
                                   kind: person.kind,
+                                  hostName: person.hostName,
                                   deptName: person.deptName,
                                   checkedInAt: person.checkedInAt,
                                 },

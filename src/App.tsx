@@ -28,9 +28,15 @@ import {
 } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { TfLogo } from "./components/TfLogo";
+import { CORPORATE_FACILITY_BG, SECURITY_CHECKPOINT_IMG, TfLogo } from "./components/TfLogo";
 import { Gate, PersonsOnSite, useUnifiedOnSiteList } from "./components/GateAndOnSite";
-import { downloadCsv, registerIssuedPasscode, useGateRegistry } from "./lib/gateRegistry";
+import {
+  downloadCsv,
+  getAttachmentByName,
+  registerIssuedPasscode,
+  setUserDepartmentOverride,
+  useGateRegistry,
+} from "./lib/gateRegistry";
 
 const TABS: Record<string, string[]> = {
   Dashboard: ["admin", "security", "report"],
@@ -177,19 +183,30 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const isObj = typeof step === "object";
 
   return (
-    <div className="auth-shell">
-      <aside className="auth-showcase">
-        <div>
-          <TfLogo size="lg" lightText />
+    <div
+      className="auth-shell"
+      style={{
+        backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.34) 50%, rgba(7, 11, 18, 0.58) 100%), url("${CORPORATE_FACILITY_BG}")`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+      }}
+    >
+      {/* TOP BAR: System Title on Left, Organization Identity + Theme on Right */}
+      <header className="auth-header-bar">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ShieldCheck size={20} style={{ color: "var(--sig)" }} />
+          <div className="system-title-group">
+            <span className="header-app-title" style={{ color: "#ffffff", fontSize: 18 }}>
+              TFSECURE
+            </span>
+            <span className="system-title-kicker" style={{ color: "#cbd5e1" }}>
+              Gate Access & Security System
+            </span>
+          </div>
         </div>
-        <div className="auth-showcase-bottom">
-          <h2>Gate Access & Security Control</h2>
-          <p>Visitor Passcodes · Gate Verification · Persons on Site</p>
-        </div>
-      </aside>
 
-      <main className="auth-form-pane">
-        <div style={{ width: "100%", maxWidth: 400, display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <TfLogo size="sm" lightText />
           <button
             type="button"
             onClick={onToggleTheme}
@@ -200,25 +217,52 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
             <span>{theme === "dark" ? "Light" : "Dark"}</span>
           </button>
         </div>
+      </header>
 
-        <form className="auth-card" onSubmit={submit}>
-          <div className="auth-card-logo-bar">
-            <TfLogo size="md" />
-          </div>
+      {/* CENTER PORTAL: Checkpoint Showcase on Left, System Login on Right */}
+      <div className="auth-main-stage">
+        <div className="auth-portal-frame">
+          <aside
+            className="auth-checkpoint-panel"
+            style={{
+              backgroundImage: `linear-gradient(180deg, rgba(7, 11, 18, 0.52) 0%, rgba(7, 11, 18, 0.06) 45%, rgba(7, 11, 18, 0.78) 100%), url("${SECURITY_CHECKPOINT_IMG}")`,
+            }}
+          >
+            <div className="auth-org-badge">
+              <TfLogo size="md" lightText />
+            </div>
 
-          <div className="auth-card-header">
-            <h1>
-              {step === "signIn"
-                ? "Sign In"
-                : step === "signUp"
-                ? "Create Account"
-                : step === "forgot"
-                ? "Reset Password"
-                : isObj && "verify" in step
-                ? "Verify Email"
-                : "New Password"}
-            </h1>
-          </div>
+            <div className="auth-showcase-bottom">
+              <h2>TFSECURE</h2>
+              <p>Visitor Passcodes · Gate Checkpoint Verification · Persons on Site</p>
+            </div>
+          </aside>
+
+          <main className="auth-form-pane">
+            <form className="auth-card" onSubmit={submit}>
+              <div className="auth-card-logo-bar">
+                <div className="system-title-group">
+                  <span className="system-title-kicker">System Portal</span>
+                  <span className="header-app-title" style={{ fontSize: 19 }}>
+                    TFSECURE
+                  </span>
+                </div>
+                <TfLogo size="sm" />
+              </div>
+
+              <div className="auth-card-header">
+                <h1>
+                  {step === "signIn"
+                    ? "Sign In"
+                    : step === "signUp"
+                    ? "Create Account"
+                    : step === "forgot"
+                    ? "Reset Password"
+                    : isObj && "verify" in step
+                    ? "Verify Email"
+                    : "New Password"}
+                </h1>
+              </div>
 
           {!isObj && (
             <div className="segmented" style={{ width: "100%" }}>
@@ -378,17 +422,21 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
               </button>
             )}
           </div>
-        </form>
-      </main>
+            </form>
+          </main>
+        </div>
+      </div>
+      <div style={{ height: 4 }} />
     </div>
   );
 }
 
 /* ==================== MODULE 1: DASHBOARD ==================== */
-function Dashboard({ onNavigate, role }: { onNavigate: (tab: string) => void; role: string }) {
+function Dashboard({ onNavigate, role, me }: { onNavigate: (tab: string) => void; role: string; me: any }) {
   const m = useQuery(api.metrics.overview);
   const passcodes = useQuery(api.passcodes.list) ?? [];
   const depts = useQuery(api.departments.list) ?? [];
+  const users = useQuery(api.users.list) ?? [];
   const auditRows = useQuery(api.audit.recent) ?? [];
   const revoke = useMutation(api.passcodes.revoke);
   const { activeOnSite } = useUnifiedOnSiteList();
@@ -419,7 +467,15 @@ function Dashboard({ onNavigate, role }: { onNavigate: (tab: string) => void; ro
 
   const maxKind = Math.max(1, ...Object.values(m.byKind));
   const activePasscodes = passcodes.filter(p => !p.revokedAt && !p.usedAt && p.expiresAt > now);
-  const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "—";
+  const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
+  const resolveHostName = (p: any) => {
+    if (p.hostName) return p.hostName;
+    const att = getAttachmentByName(p.visitorName);
+    if (att?.hostName) return att.hostName;
+    if (me && p.issuedBy === me.userId) return me.name;
+    const u = users.find(x => x.userId === p.issuedBy);
+    return u?.name ?? "Staff Host";
+  };
 
   const deptBreakdown = depts.map(d => {
     const total = passcodes.filter(p => p.hostDepartmentId === d._id).length;
@@ -551,6 +607,7 @@ function Dashboard({ onNavigate, role }: { onNavigate: (tab: string) => void; ro
                 <tr>
                   <th>Name</th>
                   <th>Type</th>
+                  <th>Host Name</th>
                   <th>Department</th>
                   <th>Expires</th>
                   <th />
@@ -564,6 +621,7 @@ function Dashboard({ onNavigate, role }: { onNavigate: (tab: string) => void; ro
                       {p.company && <div className="meta-inline">{p.company}</div>}
                     </td>
                     <td style={{ textTransform: "capitalize" }}>{p.kind}</td>
+                    <td>{resolveHostName(p)}</td>
                     <td>{deptName(p.hostDepartmentId)}</td>
                     <td className="mono">{formatRemaining(p.expiresAt, now)}</td>
                     <td style={{ textAlign: "right" }}>
@@ -621,7 +679,7 @@ function Dashboard({ onNavigate, role }: { onNavigate: (tab: string) => void; ro
               <thead>
                 <tr>
                   <th>Time</th>
-                  <th>User</th>
+                  <th>Host / User</th>
                   <th>Action</th>
                   <th>Result</th>
                 </tr>
@@ -659,6 +717,7 @@ type IssuedTicket = {
   visitorName: string;
   company?: string;
   kind: string;
+  hostName: string;
   deptName: string;
   phone?: string;
   idNumber?: string;
@@ -668,9 +727,20 @@ type IssuedTicket = {
   expiresAt: number;
 };
 
-function Passcodes({ role }: { role: string }) {
+function Passcodes({
+  role,
+  me,
+  boundDeptId,
+  boundDeptName,
+}: {
+  role: string;
+  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: Id<"departments"> };
+  boundDeptId?: Id<"departments">;
+  boundDeptName: string;
+}) {
   const rows = useQuery(api.passcodes.list) ?? [];
   const depts = useQuery(api.departments.list) ?? [];
+  const users = useQuery(api.users.list) ?? [];
   const brand = useBranding();
   const issue = useMutation(api.passcodes.issue);
   const revoke = useMutation(api.passcodes.revoke);
@@ -682,7 +752,6 @@ function Passcodes({ role }: { role: string }) {
     company: "",
     kind: "visitor" as "visitor" | "contractor" | "supplier",
     hours: 0,
-    dept: "",
     phone: "",
     idNumber: "",
     vehiclePlate: "",
@@ -710,7 +779,26 @@ function Passcodes({ role }: { role: string }) {
 
   const hours = f.hours || brand?.defaultHours || 4;
   const maxHours = brand?.maxHours ?? 72;
-  const dn = (id?: string) => depts.find(d => d._id === id)?.name ?? "Any";
+  const dn = (id?: string) => depts.find(d => d._id === id)?.name ?? boundDeptName;
+
+  const resolveHostName = (p: (typeof rows)[number]) => {
+    if ((p as any).hostName) return (p as any).hostName as string;
+    const att = getAttachmentByName(p.visitorName);
+    if (att?.hostName) return att.hostName;
+    if (p.issuedBy === me.userId) return me.name;
+    const u = users.find(x => x.userId === p.issuedBy);
+    return u?.name ?? me.name;
+  };
+
+  const resolveDeptName = (p: (typeof rows)[number]) => {
+    if (p.hostDepartmentId) return dn(p.hostDepartmentId);
+    const att = getAttachmentByName(p.visitorName);
+    if (att?.deptName) return att.deptName;
+    if (p.issuedBy === me.userId) return boundDeptName;
+    const u = users.find(x => x.userId === p.issuedBy);
+    const uDept = u ? registry.userDepartmentOverrides[u._id] || u.departmentId : undefined;
+    return uDept ? dn(uDept) : boundDeptName;
+  };
 
   const getStatus = (p: (typeof rows)[number]) => {
     if (p.revokedAt) return "Revoked";
@@ -734,20 +822,20 @@ function Passcodes({ role }: { role: string }) {
         kind: f.kind,
         hours,
         company: f.company || undefined,
-        hostDepartmentId: (f.dept || undefined) as Id<"departments"> | undefined,
+        hostDepartmentId: boundDeptId,
       });
       if (!r.ok) {
         setErrMsg(r.error);
       } else {
         const issuedAt = Date.now();
         const expiresAt = issuedAt + hours * 3600_000;
-        const resolvedDept = f.dept ? dn(f.dept) : "Any";
         await registerIssuedPasscode(r.code, {
           visitorName: f.name.trim(),
           company: f.company.trim() || undefined,
           kind: f.kind,
-          hostDepartmentId: f.dept || undefined,
-          deptName: resolvedDept,
+          hostName: me.name,
+          hostDepartmentId: boundDeptId,
+          deptName: boundDeptName,
           phone: f.phone.trim() || undefined,
           idNumber: f.idNumber.trim() || undefined,
           vehiclePlate: f.vehiclePlate.trim() || undefined,
@@ -762,7 +850,8 @@ function Passcodes({ role }: { role: string }) {
             visitorName: f.name.trim(),
             company: f.company.trim() || undefined,
             kind: f.kind,
-            deptName: resolvedDept,
+            hostName: me.name,
+            deptName: boundDeptName,
             phone: f.phone.trim() || undefined,
             idNumber: f.idNumber.trim() || undefined,
             vehiclePlate: f.vehiclePlate.trim() || undefined,
@@ -797,18 +886,18 @@ function Passcodes({ role }: { role: string }) {
           kind: f.kind,
           hours,
           company: rawCompany || f.company || undefined,
-          hostDepartmentId: (f.dept || undefined) as Id<"departments"> | undefined,
+          hostDepartmentId: boundDeptId,
         });
         if (r.ok) {
           const issuedAt = Date.now();
           const expiresAt = issuedAt + hours * 3600_000;
-          const resolvedDept = f.dept ? dn(f.dept) : "Any";
           await registerIssuedPasscode(r.code, {
             visitorName: rawName,
             company: rawCompany || f.company || undefined,
             kind: f.kind,
-            hostDepartmentId: f.dept || undefined,
-            deptName: resolvedDept,
+            hostName: me.name,
+            hostDepartmentId: boundDeptId,
+            deptName: boundDeptName,
             phone: rawPhone || f.phone || undefined,
             purpose: f.purpose || undefined,
             hours,
@@ -820,7 +909,8 @@ function Passcodes({ role }: { role: string }) {
             visitorName: rawName,
             company: rawCompany || f.company || undefined,
             kind: f.kind,
-            deptName: resolvedDept,
+            hostName: me.name,
+            deptName: boundDeptName,
             phone: rawPhone || f.phone || undefined,
             purpose: f.purpose || undefined,
             hours,
@@ -845,16 +935,17 @@ function Passcodes({ role }: { role: string }) {
       const st = getStatus(p);
       if (statusFilter !== "All" && st !== statusFilter) return false;
       if (kindFilter !== "all" && p.kind !== kindFilter) return false;
-      if (deptFilter !== "all" && (p.hostDepartmentId ?? "") !== deptFilter) return false;
+      if (deptFilter !== "all" && (p.hostDepartmentId ?? boundDeptId ?? "") !== deptFilter) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
         const matchName = p.visitorName.toLowerCase().includes(q);
         const matchComp = (p.company ?? "").toLowerCase().includes(q);
-        if (!matchName && !matchComp) return false;
+        const matchHost = resolveHostName(p).toLowerCase().includes(q);
+        if (!matchName && !matchComp && !matchHost) return false;
       }
       return true;
     });
-  }, [rows, statusFilter, kindFilter, deptFilter, search, now, registry]);
+  }, [rows, statusFilter, kindFilter, deptFilter, search, now, registry, users]);
 
   const copyText = (text: string, id: string) => {
     navigator.clipboard?.writeText(text);
@@ -865,12 +956,13 @@ function Passcodes({ role }: { role: string }) {
   const exportPasscodesCsv = () => {
     downloadCsv(
       `passcodes-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Name", "Company", "Type", "Department", "Issued", "Expires", "Status"],
+      ["Name", "Company", "Type", "Host Name", "Department", "Issued", "Expires", "Status"],
       filteredRows.map(p => [
         p.visitorName,
         p.company ?? "",
         p.kind,
-        dn(p.hostDepartmentId),
+        resolveHostName(p),
+        resolveDeptName(p),
         new Date(p._creationTime).toISOString(),
         new Date(p.expiresAt).toISOString(),
         getStatus(p),
@@ -920,7 +1012,8 @@ function Passcodes({ role }: { role: string }) {
                   <div>
                     <div style={{ fontWeight: 600 }}>{t.visitorName}</div>
                     <div className="meta-inline">
-                      {t.kind} {t.company ? `· ${t.company}` : ""} · {t.deptName} · Expires {fmt(t.expiresAt)}
+                      {t.kind} {t.company ? `· ${t.company}` : ""} · Host: {t.hostName} · {t.deptName} · Expires{" "}
+                      {fmt(t.expiresAt)}
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -982,15 +1075,12 @@ function Passcodes({ role }: { role: string }) {
                 </select>
               </div>
               <div className="field-group">
+                <label>Host Name</label>
+                <input value={me.name} readOnly disabled aria-readonly="true" />
+              </div>
+              <div className="field-group">
                 <label>Department</label>
-                <select value={f.dept} onChange={e => setF({ ...f, dept: e.target.value })}>
-                  <option value="">Any department</option>
-                  {depts.map(d => (
-                    <option key={d._id} value={d._id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                <input value={boundDeptName} readOnly disabled aria-readonly="true" />
               </div>
             </div>
 
@@ -1065,15 +1155,12 @@ function Passcodes({ role }: { role: string }) {
                 </select>
               </div>
               <div className="field-group">
+                <label>Host Name</label>
+                <input value={me.name} readOnly disabled aria-readonly="true" />
+              </div>
+              <div className="field-group">
                 <label>Department</label>
-                <select value={f.dept} onChange={e => setF({ ...f, dept: e.target.value })}>
-                  <option value="">Any department</option>
-                  {depts.map(d => (
-                    <option key={d._id} value={d._id}>
-                      {d.name}
-                    </option>
-                  ))}
-                </select>
+                <input value={boundDeptName} readOnly disabled aria-readonly="true" />
               </div>
               <div className="field-group">
                 <label>Validity</label>
@@ -1123,7 +1210,7 @@ function Passcodes({ role }: { role: string }) {
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search guest or company…"
+                placeholder="Search guest, host, or company…"
               />
             </div>
             <div className="segmented" role="group">
@@ -1160,6 +1247,7 @@ function Passcodes({ role }: { role: string }) {
                 <th>Name</th>
                 <th>Company</th>
                 <th>Type</th>
+                <th>Host Name</th>
                 <th>Department</th>
                 <th>Issued</th>
                 <th>Expires</th>
@@ -1176,7 +1264,8 @@ function Passcodes({ role }: { role: string }) {
                     <td style={{ fontWeight: 600 }}>{p.visitorName}</td>
                     <td>{p.company || <span className="status-mute">—</span>}</td>
                     <td style={{ textTransform: "capitalize" }}>{p.kind}</td>
-                    <td>{dn(p.hostDepartmentId)}</td>
+                    <td style={{ fontWeight: 500 }}>{resolveHostName(p)}</td>
+                    <td>{resolveDeptName(p)}</td>
                     <td className="mono">{fmt(p._creationTime)}</td>
                     <td className="mono">
                       {fmt(p.expiresAt)}
@@ -1281,7 +1370,7 @@ function Audit() {
   const exportAuditCsv = () => {
     downloadCsv(
       `audit-log-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Timestamp", "User", "Action", "Detail", "Result"],
+      ["Timestamp", "Host / User", "Action", "Detail", "Result"],
       filtered.map(a => [new Date(a.at).toISOString(), a.name, a.action, a.detail, a.ok ? "Allowed" : "Denied"])
     );
   };
@@ -1336,7 +1425,7 @@ function Audit() {
             <thead>
               <tr>
                 <th>Time</th>
-                <th>User</th>
+                <th>Host / User</th>
                 <th>Action</th>
                 <th>Detail</th>
                 <th>Result</th>
@@ -1544,6 +1633,7 @@ function Users({ meId }: { meId: string }) {
   const setRole = useMutation(api.users.setRole);
   const setActive = useMutation(api.users.setActive);
   const setDept = useMutation(api.users.setDepartment);
+  const registry = useGateRegistry();
 
   const [msg, setMsg] = useState("");
   const [search, setSearch] = useState("");
@@ -1552,6 +1642,19 @@ function Users({ meId }: { meId: string }) {
   const run = async (p: Promise<Res>) => {
     const r = await p;
     setMsg(r.ok ? "" : r.error ?? "Action denied");
+  };
+
+  const handleSetDept = async (profileId: Id<"profiles">, deptIdStr: string) => {
+    setUserDepartmentOverride(profileId, deptIdStr || undefined);
+    const r = await setDept({
+      profileId,
+      departmentId: (deptIdStr || undefined) as Id<"departments"> | undefined,
+    });
+    if (!r.ok && !r.error?.includes("own account")) {
+      setMsg(r.error ?? "Action denied");
+    } else {
+      setMsg("");
+    }
   };
 
   const filtered = useMemo(() => {
@@ -1608,7 +1711,7 @@ function Users({ meId }: { meId: string }) {
                 <th>Name</th>
                 <th>Email</th>
                 <th>Role</th>
-                <th>Department</th>
+                <th>Bound Department</th>
                 <th>Status</th>
                 <th />
               </tr>
@@ -1617,6 +1720,7 @@ function Users({ meId }: { meId: string }) {
               {filtered.map(u => {
                 const self = u._id === meId;
                 const isActive = u.active !== false;
+                const effectiveDeptId = registry.userDepartmentOverrides[u._id] ?? u.departmentId ?? depts[0]?._id ?? "";
                 return (
                   <tr key={u._id}>
                     <td>
@@ -1639,18 +1743,10 @@ function Users({ meId }: { meId: string }) {
                     </td>
                     <td>
                       <select
-                        disabled={self}
-                        value={u.departmentId ?? ""}
-                        onChange={e =>
-                          run(
-                            setDept({
-                              profileId: u._id,
-                              departmentId: (e.target.value || undefined) as Id<"departments"> | undefined,
-                            })
-                          )
-                        }
+                        value={effectiveDeptId}
+                        onChange={e => handleSetDept(u._id, e.target.value)}
                       >
-                        <option value="">None</option>
+                        {depts.length === 0 && <option value="">General</option>}
                         {depts.map(d => (
                           <option key={d._id} value={d._id}>
                             {d.name}
@@ -1899,9 +1995,11 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { signOut } = useAuthActions();
   const me = useQuery(api.users.me);
+  const depts = useQuery(api.departments.list) ?? [];
   const brand = useBranding();
   const ensure = useMutation(api.users.ensureProfile);
   const { activeOnSite } = useUnifiedOnSiteList();
+  const registry = useGateRegistry();
 
   const [tab, setTab] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -1928,7 +2026,10 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     return (
       <div className="auth-form-pane" style={{ height: "100dvh" }}>
         <div className="auth-card">
-          <TfLogo size="md" />
+          <div className="auth-card-logo-bar" style={{ gap: 10 }}>
+            <TfLogo size="md" />
+            <span className="header-app-title">TFSECURE</span>
+          </div>
           <h1>Account Deactivated</h1>
           <p className="status-mute">Contact your administrator to restore access.</p>
           <button className="pri" onClick={() => signOut()}>
@@ -1938,6 +2039,11 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
       </div>
     );
   }
+
+  const boundDeptId = ((registry.userDepartmentOverrides[me._id] as Id<"departments"> | undefined) ??
+    me.departmentId ??
+    depts[0]?._id) as Id<"departments"> | undefined;
+  const boundDeptName = depts.find(d => d._id === boundDeptId)?.name ?? "HSE & Security";
 
   const tabs = Object.keys(TABS).filter(t => TABS[t].includes(me.role));
   const active = tabs.includes(tab) ? tab : tabs[0];
@@ -1951,7 +2057,8 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     <div className="app-layout">
       <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`} aria-label="Workspace navigation">
         <div>
-          <div className="sidebar-brand">
+          {/* ORGANIZATION LOGO SLOT (TF Commodities) */}
+          <div className="sidebar-brand" style={{ justifyContent: mobileNavOpen ? "space-between" : "center" }}>
             <TfLogo size="md" />
             {mobileNavOpen && (
               <button
@@ -1990,7 +2097,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
           <div className="operator-summary">
             <div className="operator-name">{me.name}</div>
             <div className="operator-meta" style={{ textTransform: "capitalize" }}>
-              {me.role}
+              {me.role} · {boundDeptName}
             </div>
           </div>
 
@@ -2014,6 +2121,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
       <div className="main-column">
         <header className="topbar">
+          {/* SYSTEM HEADER TITLE (TFSECURE) */}
           <div className="topbar-zone-brand">
             <button
               type="button"
@@ -2023,7 +2131,11 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             >
               <Menu size={18} />
             </button>
-            <TfLogo size="sm" />
+            <ShieldCheck size={18} style={{ color: "var(--sig)", flexShrink: 0 }} />
+            <div className="system-title-group">
+              <span className="header-app-title">TFSECURE</span>
+              <span className="system-title-kicker">Gate Access & Security System</span>
+            </div>
           </div>
 
           <nav className="topbar-zone-nav" aria-label="Primary sections">
@@ -2051,8 +2163,10 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
         <main className="workspace-content">
           <div className="workspace-inner">
-            {active === "Dashboard" && <Dashboard onNavigate={selectTab} role={me.role} />}
-            {active === "Passcodes" && <Passcodes role={me.role} />}
+            {active === "Dashboard" && <Dashboard onNavigate={selectTab} role={me.role} me={me} />}
+            {active === "Passcodes" && (
+              <Passcodes role={me.role} me={me} boundDeptId={boundDeptId} boundDeptName={boundDeptName} />
+            )}
             {active === "Gate check" && (
               <Gate operatorName={me.name} onNavigateOnSite={() => selectTab("Persons on site")} />
             )}
