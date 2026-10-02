@@ -27,6 +27,7 @@ import {
   getMergedUserDirectory,
   getNextAvailableBadge,
   isProfileApproved,
+  markGateOperatorActionOnThisDevice,
   recordGateDenial,
   recordGuestCheckIn,
   recordGuestCheckOut,
@@ -431,6 +432,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         name: operatorName,
         role: effectiveRole,
       };
+      markGateOperatorActionOnThisDevice();
       let r: any = await validate({ code: clean });
       if (!r.ok) {
         const localCheck = await validateLocalPasscode(clean, gateActor);
@@ -553,6 +555,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
     setBusy(true);
     try {
+      markGateOperatorActionOnThisDevice();
       if (!pendingGuest.alreadyValidatedOnServer) {
         const gateActor = {
           userId: me?.userId ?? operatorName,
@@ -609,6 +612,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         notes: sanitizeText(guardNotes, 160) || undefined,
         checkedInAt: checkInTime,
         checkedInBy: operatorName,
+        checkedInByUserId: me?.userId,
         expiresAt: pendingGuest.expiresAt,
       });
 

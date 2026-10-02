@@ -88,10 +88,15 @@ function getOrCreateAudioContext(): AudioContext | null {
 
 if (typeof window !== "undefined") {
   const unlockAudio = () => {
-    getOrCreateAudioContext();
+    const ctx = getOrCreateAudioContext();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
   };
-  window.addEventListener("pointerdown", unlockAudio, { passive: true, once: true });
-  window.addEventListener("keydown", unlockAudio, { passive: true, once: true });
+  window.addEventListener("pointerdown", unlockAudio, { passive: true });
+  window.addEventListener("keydown", unlockAudio, { passive: true });
+  window.addEventListener("touchstart", unlockAudio, { passive: true });
+  window.addEventListener("click", unlockAudio, { passive: true });
 }
 
 export function isNotificationSoundMuted(): boolean {
@@ -118,104 +123,116 @@ export function setNotificationSoundMuted(muted: boolean) {
 export function playNotificationDingDong(options?: { force?: boolean }) {
   if (!options?.force && isNotificationSoundMuted()) return;
   const nowMs = Date.now();
-  if (!options?.force && nowMs - lastChimeAt < 550) return;
+  if (!options?.force && nowMs - lastChimeAt < 1800) return;
   lastChimeAt = nowMs;
 
   try {
     const ctx = getOrCreateAudioContext();
     if (!ctx) return;
 
-    const t0 = ctx.currentTime + 0.015;
-
-    const masterGain = ctx.createGain();
-    masterGain.gain.setValueAtTime(0.85, t0);
-
-    const warmthFilter = ctx.createBiquadFilter();
-    warmthFilter.type = "lowpass";
-    warmthFilter.frequency.setValueAtTime(3400, t0);
-    warmthFilter.Q.setValueAtTime(0.65, t0);
-
-    const delayNode = ctx.createDelay(0.2);
-    delayNode.delayTime.setValueAtTime(0.036, t0);
-
-    const feedbackGain = ctx.createGain();
-    feedbackGain.gain.setValueAtTime(0.22, t0);
-
-    const wetGain = ctx.createGain();
-    wetGain.gain.setValueAtTime(0.24, t0);
-
-    warmthFilter.connect(masterGain);
-    warmthFilter.connect(delayNode);
-    delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode);
-    delayNode.connect(wetGain);
-    wetGain.connect(masterGain);
-    masterGain.connect(ctx.destination);
-
-    const scheduleBellTone = (
-      startTime: number,
-      fundamentalHz: number,
-      peakGain: number,
-      attackSec: number,
-      stretchDurationSec: number
-    ) => {
-      const oscMain = ctx.createOscillator();
-      const gainMain = ctx.createGain();
-      oscMain.type = "sine";
-      oscMain.frequency.setValueAtTime(fundamentalHz, startTime);
-
-      gainMain.gain.setValueAtTime(0.0001, startTime);
-      gainMain.gain.linearRampToValueAtTime(peakGain, startTime + attackSec);
-      gainMain.gain.setTargetAtTime(peakGain * 0.48, startTime + attackSec, stretchDurationSec * 0.22);
-      gainMain.gain.exponentialRampToValueAtTime(0.0001, startTime + stretchDurationSec);
-
-      oscMain.connect(gainMain);
-      gainMain.connect(warmthFilter);
-      oscMain.start(startTime);
-      oscMain.stop(startTime + stretchDurationSec + 0.05);
-
-      const oscSub = ctx.createOscillator();
-      const gainSub = ctx.createGain();
-      oscSub.type = "sine";
-      oscSub.frequency.setValueAtTime(fundamentalHz * 0.5, startTime);
-
-      gainSub.gain.setValueAtTime(0.0001, startTime);
-      gainSub.gain.linearRampToValueAtTime(peakGain * 0.34, startTime + attackSec * 1.15);
-      gainSub.gain.exponentialRampToValueAtTime(0.0001, startTime + stretchDurationSec * 1.05);
-
-      oscSub.connect(gainSub);
-      gainSub.connect(warmthFilter);
-      oscSub.start(startTime);
-      oscSub.stop(startTime + stretchDurationSec * 1.05 + 0.05);
-
-      const oscShimmer = ctx.createOscillator();
-      const gainShimmer = ctx.createGain();
-      oscShimmer.type = "sine";
-      oscShimmer.frequency.setValueAtTime(fundamentalHz * 2, startTime);
-
-      gainShimmer.gain.setValueAtTime(0.0001, startTime);
-      gainShimmer.gain.linearRampToValueAtTime(peakGain * 0.09, startTime + attackSec * 0.8);
-      gainShimmer.gain.exponentialRampToValueAtTime(0.0001, startTime + Math.min(0.65, stretchDurationSec * 0.4));
-
-      oscShimmer.connect(gainShimmer);
-      gainShimmer.connect(warmthFilter);
-      oscShimmer.start(startTime);
-      oscShimmer.stop(startTime + Math.min(0.65, stretchDurationSec * 0.4) + 0.05);
-    };
-
-    // 1. "DING" — High, soft E6 (1318.51 Hz), stretched 1.65s singing tail
-    scheduleBellTone(t0, 1318.51, 0.135, 0.042, 1.65);
-
-    // 2. "DONG" — High-warm C6 (1046.50 Hz) entering at +0.54s, stretched 2.35s resonant tail
-    scheduleBellTone(t0 + 0.54, 1046.5, 0.145, 0.052, 2.35);
-
-    setTimeout(() => {
+    const triggerTones = () => {
       try {
-        masterGain.disconnect();
+        const t0 = ctx.currentTime + 0.015;
+
+        const masterGain = ctx.createGain();
+        masterGain.gain.setValueAtTime(0.85, t0);
+
+        const warmthFilter = ctx.createBiquadFilter();
+        warmthFilter.type = "lowpass";
+        warmthFilter.frequency.setValueAtTime(3400, t0);
+        warmthFilter.Q.setValueAtTime(0.65, t0);
+
+        const delayNode = ctx.createDelay(0.2);
+        delayNode.delayTime.setValueAtTime(0.036, t0);
+
+        const feedbackGain = ctx.createGain();
+        feedbackGain.gain.setValueAtTime(0.22, t0);
+
+        const wetGain = ctx.createGain();
+        wetGain.gain.setValueAtTime(0.24, t0);
+
+        warmthFilter.connect(masterGain);
+        warmthFilter.connect(delayNode);
+        delayNode.connect(feedbackGain);
+        feedbackGain.connect(delayNode);
+        delayNode.connect(wetGain);
+        wetGain.connect(masterGain);
+        masterGain.connect(ctx.destination);
+
+        const scheduleBellTone = (
+          startTime: number,
+          fundamentalHz: number,
+          peakGain: number,
+          attackSec: number,
+          stretchDurationSec: number
+        ) => {
+          const oscMain = ctx.createOscillator();
+          const gainMain = ctx.createGain();
+          oscMain.type = "sine";
+          oscMain.frequency.setValueAtTime(fundamentalHz, startTime);
+
+          gainMain.gain.setValueAtTime(0.0001, startTime);
+          gainMain.gain.linearRampToValueAtTime(peakGain, startTime + attackSec);
+          gainMain.gain.setTargetAtTime(peakGain * 0.48, startTime + attackSec, stretchDurationSec * 0.22);
+          gainMain.gain.exponentialRampToValueAtTime(0.0001, startTime + stretchDurationSec);
+
+          oscMain.connect(gainMain);
+          gainMain.connect(warmthFilter);
+          oscMain.start(startTime);
+          oscMain.stop(startTime + stretchDurationSec + 0.05);
+
+          const oscSub = ctx.createOscillator();
+          const gainSub = ctx.createGain();
+          oscSub.type = "sine";
+          oscSub.frequency.setValueAtTime(fundamentalHz * 0.5, startTime);
+
+          gainSub.gain.setValueAtTime(0.0001, startTime);
+          gainSub.gain.linearRampToValueAtTime(peakGain * 0.34, startTime + attackSec * 1.15);
+          gainSub.gain.exponentialRampToValueAtTime(0.0001, startTime + stretchDurationSec * 1.05);
+
+          oscSub.connect(gainSub);
+          gainSub.connect(warmthFilter);
+          oscSub.start(startTime);
+          oscSub.stop(startTime + stretchDurationSec * 1.05 + 0.05);
+
+          const oscShimmer = ctx.createOscillator();
+          const gainShimmer = ctx.createGain();
+          oscShimmer.type = "sine";
+          oscShimmer.frequency.setValueAtTime(fundamentalHz * 2, startTime);
+
+          gainShimmer.gain.setValueAtTime(0.0001, startTime);
+          gainShimmer.gain.linearRampToValueAtTime(peakGain * 0.09, startTime + attackSec * 0.8);
+          gainShimmer.gain.exponentialRampToValueAtTime(0.0001, startTime + Math.min(0.65, stretchDurationSec * 0.4));
+
+          oscShimmer.connect(gainShimmer);
+          gainShimmer.connect(warmthFilter);
+          oscShimmer.start(startTime);
+          oscShimmer.stop(startTime + Math.min(0.65, stretchDurationSec * 0.4) + 0.05);
+        };
+
+        // 1. "DING" — High, soft E6 (1318.51 Hz), stretched 1.65s singing tail
+        scheduleBellTone(t0, 1318.51, 0.135, 0.042, 1.65);
+
+        // 2. "DONG" — High-warm C6 (1046.50 Hz) entering at +0.54s, stretched 2.35s resonant tail
+        scheduleBellTone(t0 + 0.54, 1046.5, 0.145, 0.052, 2.35);
+
+        setTimeout(() => {
+          try {
+            masterGain.disconnect();
+          } catch {
+            // ignore
+          }
+        }, 3300);
       } catch {
         // ignore
       }
-    }, 3300);
+    };
+
+    if (ctx.state === "suspended") {
+      ctx.resume().then(triggerTones).catch(() => {});
+    } else {
+      triggerTones();
+    }
   } catch {
     // Ignore Web Audio errors on restricted devices
   }
@@ -262,9 +279,11 @@ export type OnSiteRecord = {
   notes?: string;
   checkedInAt: number;
   checkedInBy: string;
+  checkedInByUserId?: string;
   expiresAt?: number;
   checkedOutAt?: number;
   checkedOutBy?: string;
+  checkedOutByUserId?: string;
   checkoutNotes?: string;
 };
 
@@ -293,6 +312,11 @@ export type LocalNotificationEntry = {
   at: number;
   read: boolean;
   targetUserId?: string;
+  targetHostName?: string;
+  targetHostEmail?: string;
+  actorUserId?: string;
+  actorName?: string;
+  passcodeId?: string;
 };
 
 export const CURRENT_POLICY_VERSION = "Act843-v2.5";
@@ -366,103 +390,6 @@ export const DEFAULT_LOCAL_DEPARTMENTS: LocalDepartmentRecord[] = [
   { _id: "dept_administration", _creationTime: 1727000006000, name: "Administration" },
 ];
 
-export type SoftwareUpdateRecord = {
-  id: string;
-  version: string;
-  previousVersion: string;
-  channel: "Production" | "Staging" | "Enterprise LTS";
-  commitHash: string;
-  source: "repo_pull" | "release_upgrade" | "patch_upload" | "rollback";
-  summary: string;
-  changelog: string[];
-  updatedBy: string;
-  updatedAt: number;
-};
-
-export type SoftwareReleaseDefinition = {
-  version: string;
-  channel: "Production" | "Staging" | "Enterprise LTS";
-  commitHash: string;
-  releasedAt: string;
-  summary: string;
-  changelog: string[];
-};
-
-export const AVAILABLE_SOFTWARE_RELEASES: SoftwareReleaseDefinition[] = [
-  {
-    version: "2.4.0",
-    channel: "Production",
-    commitHash: "7c91e04",
-    releasedAt: "2026-09-15",
-    summary: "Baseline Security Operations & Gate Access Control",
-    changelog: [
-      "Single-use 6-digit SHA-256 visitor passcodes with expiration enforcement",
-      "Brute-force gate lockout protection (15 failed attempts in 10m)",
-      "Department-scoped RBAC for Admin, Security, Department Head, and Staff",
-    ],
-  },
-  {
-    version: "2.4.2",
-    channel: "Production",
-    commitHash: "b4e82a9",
-    releasedAt: "2026-09-24",
-    summary: "Audit Ledger Checkout Tracking & Web Audio Chime",
-    changelog: [
-      "Full visitor check-out recording across Audit Log, Dashboard System Logs, and CSV reports",
-      "Synthesized soft, high, stretched two-tone ding-dong notification chime",
-      "Centralized tablet & desktop security header banner",
-    ],
-  },
-  {
-    version: "2.5.0",
-    channel: "Production",
-    commitHash: "e19d4f2",
-    releasedAt: "2026-09-29",
-    summary: "System Admin Suite, Admin Invitations, Media Persistence & Disaster Recovery",
-    changelog: [
-      "Primary System Admin bootstrap promotion and pre-approved Admin/Staff invitation tokens",
-      "Persistent custom logo & background image optimizer with manual removal controls",
-      "Live Production Analytics telemetry and full JSON system backup & restore",
-    ],
-  },
-  {
-    version: "2.5.1",
-    channel: "Production",
-    commitHash: "f62a9d8",
-    releasedAt: "2026-10-01",
-    summary: "Mandatory Data Protection (Act 843) Gate & System Architecture Documentation",
-    changelog: [
-      "Pre-login and workspace Data Protection (Act 843) & Security Policy agreement gate with audit logging",
-      "Comprehensive Jusclick-TeQiQ Architecture Proposal & Pilot Evaluation checklist in Documentation",
-      "Hardened CSP image policy and storage quota protection for high-resolution media",
-    ],
-  },
-  {
-    version: "2.6.0",
-    channel: "Production",
-    commitHash: "c84e19a",
-    releasedAt: "2026-10-01",
-    summary: "Multi-Platform (iOS, Android, Windows) Installability & One-Time Local Host Setup",
-    changelog: [
-      "Full PWA manifest, Apple Touch Icons, Windows Tile config, Capacitor (iOS/Android), and Electron (Windows) configs",
-      "Interactive 4-step One-Time Local Host Provisioning Wizard (setup.mjs, setup-windows.bat, setup-unix.sh)",
-      "In-app Install button and live Offline Mode indicator",
-    ],
-  },
-  {
-    version: "2.6.1",
-    channel: "Production",
-    commitHash: "d49a82c",
-    releasedAt: "2026-10-01",
-    summary: "Hosted Zero-Downtime OTA Update & Upgrade Engine with Service Worker Sync",
-    changelog: [
-      "Hosted-safe update & upgrade pipeline (/version.json + Service Worker cache refresh + automatic fallback)",
-      "Pre-upgrade state snapshot with automatic rollback protection if any step is interrupted",
-      "Dynamic release catalog and one-click signed JSON patch export/import for air-gapped or hosted instances",
-    ],
-  },
-];
-
 export type SystemConfig = {
   orgName?: string;
   accentColor?: string;
@@ -478,15 +405,9 @@ export type SystemConfig = {
   requireAdminApproval: boolean;
   autoFlagOverstays: boolean;
   systemVersion: string;
-  buildCommit?: string;
-  gitBranch?: string;
-  gitRemoteUrl?: string;
-  autoUpdateEnabled?: boolean;
   releaseChannel: "Production" | "Staging" | "Enterprise LTS";
   lastUpdatedAt: number;
-  lastUpdateCheckAt?: number;
   lastBackupAt?: number;
-  updateHistory?: SoftwareUpdateRecord[];
 };
 
 export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
@@ -504,31 +425,9 @@ export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
   requireAdminApproval: false,
   autoFlagOverstays: true,
   systemVersion: "2.4.2",
-  buildCommit: "b4e82a9",
-  gitBranch: "main",
-  gitRemoteUrl: "origin/main",
-  autoUpdateEnabled: true,
   releaseChannel: "Production",
   lastUpdatedAt: Date.now(),
-  lastUpdateCheckAt: Date.now(),
   lastBackupAt: undefined,
-  updateHistory: [
-    {
-      id: "upd_init_242",
-      version: "2.4.2",
-      previousVersion: "2.4.0",
-      channel: "Production",
-      commitHash: "b4e82a9",
-      source: "release_upgrade",
-      summary: "Audit Ledger Checkout Tracking & Web Audio Chime",
-      changelog: [
-        "Full visitor check-out recording across Audit Log, Dashboard System Logs, and CSV reports",
-        "Synthesized soft, high, stretched two-tone ding-dong notification chime",
-      ],
-      updatedBy: "System Installer",
-      updatedAt: Date.now() - 3_600_000,
-    },
-  ],
 };
 
 type RegistryState = {
@@ -676,6 +575,308 @@ function loadRegistry(): RegistryState {
 
 let state: RegistryState = loadRegistry();
 const subscribers = new Set<() => void>();
+const CLIENT_DEVICE_ID = `dev_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+let syncChannel: BroadcastChannel | null = null;
+let isApplyingRemoteSync = false;
+let lastLocalGateOperatorActionAt = 0;
+
+export function markGateOperatorActionOnThisDevice() {
+  lastLocalGateOperatorActionAt = Date.now();
+}
+
+export function wasGateActionPerformedOnThisDeviceRecently(windowMs = 6000): boolean {
+  return Date.now() - lastLocalGateOperatorActionAt < windowMs;
+}
+
+export function isVisitNotification(n: { kind?: string; targetUserId?: string; targetHostName?: string }): boolean {
+  return (
+    n.kind === "arrival" ||
+    n.kind === "checkin" ||
+    n.kind === "checkout" ||
+    Boolean(n.targetUserId || n.targetHostName)
+  );
+}
+
+export function isNotificationForHostUser(
+  n: LocalNotificationEntry,
+  me?: { userId?: string; name?: string; email?: string } | null
+): boolean {
+  if (!me) return false;
+  if (n.targetUserId && me.userId) {
+    if (n.targetUserId === me.userId) return true;
+    // Also fallback check if hostName matches when local/server userId differs
+    if (
+      n.targetHostName &&
+      me.name &&
+      n.targetHostName.trim().toLowerCase() === me.name.trim().toLowerCase()
+    ) {
+      return true;
+    }
+    return false;
+  }
+  if (n.targetHostName && me.name) {
+    return n.targetHostName.trim().toLowerCase() === me.name.trim().toLowerCase();
+  }
+  return false;
+}
+
+function mergeRemoteState(incoming: Partial<RegistryState>) {
+  if (!incoming || typeof incoming !== "object") return;
+  let changed = false;
+
+  const mergedNotifsMap = new Map<string, LocalNotificationEntry>();
+  for (const n of state.localNotifications) {
+    mergedNotifsMap.set(n._id, n);
+  }
+  if (Array.isArray(incoming.localNotifications)) {
+    for (const n of incoming.localNotifications) {
+      if (!n || !n._id) continue;
+      const existing = mergedNotifsMap.get(n._id);
+      if (!existing) {
+        mergedNotifsMap.set(n._id, n);
+        changed = true;
+      } else if (n.at > existing.at) {
+        mergedNotifsMap.set(n._id, n);
+        changed = true;
+      }
+    }
+  }
+
+  const mergedOnSiteMap = new Map<string, OnSiteRecord>();
+  for (const r of state.onSiteRecords) {
+    mergedOnSiteMap.set(r.passcodeId || r.id, r);
+  }
+  if (Array.isArray(incoming.onSiteRecords)) {
+    for (const r of incoming.onSiteRecords) {
+      if (!r || !r.id) continue;
+      const k = r.passcodeId || r.id;
+      const existing = mergedOnSiteMap.get(k);
+      if (!existing || (r.checkedOutAt && !existing.checkedOutAt) || r.checkedInAt > existing.checkedInAt) {
+        mergedOnSiteMap.set(k, r);
+        changed = true;
+      }
+    }
+  }
+
+  const mergedPasscodesMap = new Map<string, LocalPasscodeRecord>();
+  for (const p of state.localPasscodes) {
+    mergedPasscodesMap.set(p._id, p);
+  }
+  if (Array.isArray(incoming.localPasscodes)) {
+    for (const p of incoming.localPasscodes) {
+      if (!p || !p._id) continue;
+      const existing = mergedPasscodesMap.get(p._id);
+      if (
+        !existing ||
+        (p.usedAt && !existing.usedAt) ||
+        (p.revokedAt && !existing.revokedAt)
+      ) {
+        mergedPasscodesMap.set(p._id, {
+          ...existing,
+          ...p,
+          usedAt: p.usedAt ?? existing?.usedAt,
+          revokedAt: p.revokedAt ?? existing?.revokedAt,
+        });
+        changed = true;
+      }
+    }
+  }
+
+  const mergedAuditsMap = new Map<string, LocalAuditEntry>();
+  for (const a of state.localAuditEntries) {
+    mergedAuditsMap.set(a._id, a);
+  }
+  if (Array.isArray(incoming.localAuditEntries)) {
+    for (const a of incoming.localAuditEntries) {
+      if (!a || !a._id) continue;
+      if (!mergedAuditsMap.has(a._id)) {
+        mergedAuditsMap.set(a._id, a);
+        changed = true;
+      }
+    }
+  }
+
+  const nextCheckedOut = {
+    ...state.checkedOutPasscodeIds,
+    ...(incoming.checkedOutPasscodeIds ?? {}),
+  };
+  if (
+    Object.keys(nextCheckedOut).length !== Object.keys(state.checkedOutPasscodeIds).length
+  ) {
+    changed = true;
+  }
+
+  const nextUsed = {
+    ...state.usedPasscodeTimestamps,
+    ...(incoming.usedPasscodeTimestamps ?? {}),
+  };
+  if (Object.keys(nextUsed).length !== Object.keys(state.usedPasscodeTimestamps).length) {
+    changed = true;
+  }
+
+  const nextRevoked = {
+    ...state.revokedPasscodeIds,
+    ...(incoming.revokedPasscodeIds ?? {}),
+  };
+  if (Object.keys(nextRevoked).length !== Object.keys(state.revokedPasscodeIds).length) {
+    changed = true;
+  }
+
+  const nextHashAtt = {
+    ...state.attachmentsByHash,
+    ...(incoming.attachmentsByHash ?? {}),
+  };
+  if (Object.keys(nextHashAtt).length !== Object.keys(state.attachmentsByHash).length) {
+    changed = true;
+  }
+
+  const nextPcAtt = {
+    ...state.attachmentsByPasscodeId,
+    ...(incoming.attachmentsByPasscodeId ?? {}),
+  };
+  const nextNameAtt = {
+    ...state.attachmentsByName,
+    ...(incoming.attachmentsByName ?? {}),
+  };
+
+  if (!changed) return;
+
+  state = {
+    ...state,
+    attachmentsByHash: nextHashAtt,
+    attachmentsByPasscodeId: nextPcAtt,
+    attachmentsByName: nextNameAtt,
+    localPasscodes: Array.from(mergedPasscodesMap.values())
+      .sort((a, b) => b._creationTime - a._creationTime)
+      .slice(0, 300),
+    revokedPasscodeIds: nextRevoked,
+    usedPasscodeTimestamps: nextUsed,
+    onSiteRecords: Array.from(mergedOnSiteMap.values()).sort(
+      (a, b) => b.checkedInAt - a.checkedInAt
+    ),
+    checkedOutPasscodeIds: nextCheckedOut,
+    deniedPasscodeIds: {
+      ...state.deniedPasscodeIds,
+      ...(incoming.deniedPasscodeIds ?? {}),
+    },
+    deniedCodeHashes: {
+      ...state.deniedCodeHashes,
+      ...(incoming.deniedCodeHashes ?? {}),
+    },
+    localAuditEntries: Array.from(mergedAuditsMap.values())
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 300),
+    localNotifications: Array.from(mergedNotifsMap.values())
+      .sort((a, b) => b.at - a.at)
+      .slice(0, 100),
+  };
+
+  isApplyingRemoteSync = true;
+  try {
+    localStorage.setItem(REGISTRY_KEY, JSON.stringify(state));
+  } catch {
+    // ignore quota errors
+  }
+  isApplyingRemoteSync = false;
+  subscribers.forEach(fn => fn());
+}
+
+function pushStateToLanServer() {
+  if (typeof window === "undefined" || isApplyingRemoteSync) return;
+  try {
+    syncChannel?.postMessage({ __senderDeviceId: CLIENT_DEVICE_ID, state });
+  } catch {
+    // ignore
+  }
+  try {
+    const syncPayload = {
+      __senderDeviceId: CLIENT_DEVICE_ID,
+      attachmentsByHash: state.attachmentsByHash,
+      attachmentsByPasscodeId: state.attachmentsByPasscodeId,
+      attachmentsByName: state.attachmentsByName,
+      localPasscodes: state.localPasscodes,
+      revokedPasscodeIds: state.revokedPasscodeIds,
+      usedPasscodeTimestamps: state.usedPasscodeTimestamps,
+      onSiteRecords: state.onSiteRecords,
+      checkedOutPasscodeIds: state.checkedOutPasscodeIds,
+      deniedPasscodeIds: state.deniedPasscodeIds,
+      deniedCodeHashes: state.deniedCodeHashes,
+      localAuditEntries: state.localAuditEntries.slice(0, 120),
+      localNotifications: state.localNotifications.slice(0, 80),
+    };
+    fetch("/api/tfsecure-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(syncPayload),
+    }).catch(() => {});
+  } catch {
+    // ignore
+  }
+}
+
+async function pullStateFromLanServer() {
+  if (typeof window === "undefined") return;
+  try {
+    const res = await fetch(`/api/tfsecure-sync?t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && typeof data === "object") {
+      mergeRemoteState(data);
+    }
+  } catch {
+    // ignore offline/unreachable
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", e => {
+    if (e.key === REGISTRY_KEY && e.newValue) {
+      try {
+        const parsed = JSON.parse(e.newValue);
+        mergeRemoteState(parsed);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  if ("BroadcastChannel" in window) {
+    try {
+      syncChannel = new BroadcastChannel("tfsecure_registry_sync_v1");
+      syncChannel.onmessage = ev => {
+        if (ev.data && ev.data.__senderDeviceId !== CLIENT_DEVICE_ID && ev.data.state) {
+          mergeRemoteState(ev.data.state);
+        }
+      };
+    } catch {
+      // ignore
+    }
+  }
+
+  pullStateFromLanServer();
+
+  if ("EventSource" in window) {
+    try {
+      const es = new EventSource("/api/tfsecure-sync/stream");
+      es.onmessage = ev => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.senderDeviceId !== CLIENT_DEVICE_ID) {
+            pullStateFromLanServer();
+          }
+        } catch {
+          pullStateFromLanServer();
+        }
+      };
+    } catch {
+      // ignore
+    }
+  }
+
+  setInterval(() => {
+    pullStateFromLanServer();
+  }, 2500);
+}
 
 function saveAndNotify() {
   try {
@@ -720,6 +921,7 @@ function saveAndNotify() {
       // ignore
     }
   }
+  pushStateToLanServer();
   subscribers.forEach(fn => fn());
 }
 
@@ -1172,7 +1374,6 @@ export function inviteUserAccount(params: {
     localNotifications: [notifEntry, ...state.localNotifications].slice(0, 100),
   };
   saveAndNotify();
-  playNotificationDingDong();
   return record;
 }
 
@@ -1361,642 +1562,6 @@ export function optimizeImageFileToDataUrl(
   });
 }
 
-export function compareSoftwareVersions(a: string, b: string): number {
-  const pa = a.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
-  const pb = b.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-const compareSemver = compareSoftwareVersions;
-
-export function incrementPatchVersion(version: string): string {
-  const parts = version.replace(/^v/i, "").split(".").map(n => parseInt(n, 10) || 0);
-  const major = parts[0] ?? 2;
-  const minor = parts[1] ?? 6;
-  const patch = (parts[2] ?? 0) + 1;
-  return `${major}.${minor}.${patch}`;
-}
-
-function generateCommitHash(): string {
-  const r = new Uint32Array(2);
-  crypto.getRandomValues(r);
-  return ((r[0] ^ r[1]) >>> 0).toString(16).padStart(7, "0").slice(0, 7);
-}
-
-/**
- * Returns the complete release catalog, dynamically merging built-in releases,
- * any custom/rolled-out releases recorded in `updateHistory`, and the next available
- * incremental OTA upgrade target so the System Admin can always upgrade cleanly.
- */
-export function getDynamicReleaseCatalog(customSysConfig?: SystemConfig): SoftwareReleaseDefinition[] {
-  const cfg = customSysConfig ?? state.systemConfig;
-  const byVersion = new Map<string, SoftwareReleaseDefinition>();
-
-  for (const rel of AVAILABLE_SOFTWARE_RELEASES) {
-    byVersion.set(rel.version, rel);
-  }
-
-  for (const rec of cfg.updateHistory ?? []) {
-    if (rec.version && !byVersion.has(rec.version)) {
-      byVersion.set(rec.version, {
-        version: rec.version,
-        channel: rec.channel,
-        commitHash: rec.commitHash || "b4e82a9",
-        releasedAt: new Date(rec.updatedAt).toISOString().slice(0, 10),
-        summary: rec.summary || `Installed release v${rec.version}`,
-        changelog:
-          rec.changelog && rec.changelog.length > 0
-            ? rec.changelog
-            : [`Applied runtime build v${rec.version} (${rec.commitHash})`],
-      });
-    }
-  }
-
-  if (cfg.systemVersion && !byVersion.has(cfg.systemVersion)) {
-    byVersion.set(cfg.systemVersion, {
-      version: cfg.systemVersion,
-      channel: cfg.releaseChannel,
-      commitHash: cfg.buildCommit || "d49a82c",
-      releasedAt: new Date(cfg.lastUpdatedAt).toISOString().slice(0, 10),
-      summary: `Active Runtime Build v${cfg.systemVersion}`,
-      changelog: [`Running build v${cfg.systemVersion} (${cfg.buildCommit || "d49a82c"})`],
-    });
-  }
-
-  const sorted = Array.from(byVersion.values()).sort((a, b) => compareSemver(a.version, b.version));
-  const highest = sorted[sorted.length - 1]?.version || "2.6.1";
-  const current = cfg.systemVersion || "2.4.2";
-
-  // If the system is already on or above the highest catalog release, expose the next OTA hotfix build
-  if (compareSemver(current, highest) >= 0) {
-    const nextPatch = incrementPatchVersion(current);
-    if (!byVersion.has(nextPatch)) {
-      sorted.push({
-        version: nextPatch,
-        channel: cfg.releaseChannel || "Production",
-        commitHash: "ota-next",
-        releasedAt: new Date().toISOString().slice(0, 10),
-        summary: `Next Hosted OTA Release Build (v${nextPatch} Cumulative Hotfix & Cache Sync)`,
-        changelog: [
-          `Incremental hosted OTA runtime upgrade from v${current} to v${nextPatch}`,
-          "Synchronizes PWA Service Worker precache and refreshes runtime manifest",
-          "Verifies Convex RBAC permissions, Act 843 compliance logs, and gate session state",
-        ],
-      });
-    }
-  }
-
-  return sorted;
-}
-
-export function checkForSoftwareUpdates(
-  actorName = "System Admin",
-  targetChannel?: SystemConfig["releaseChannel"]
-) {
-  const now = Date.now();
-  const channel = targetChannel ?? state.systemConfig.releaseChannel;
-  const currentVersion = state.systemConfig.systemVersion || "2.4.2";
-  const catalog = getDynamicReleaseCatalog(state.systemConfig);
-  const StrictCatalog = AVAILABLE_SOFTWARE_RELEASES;
-  const newerInStrict = StrictCatalog.filter(rel => compareSemver(rel.version, currentVersion) > 0);
-  const latestStrict = StrictCatalog[StrictCatalog.length - 1];
-  const nextAvailable =
-    newerInStrict[newerInStrict.length - 1] ??
-    catalog[catalog.length - 1] ??
-    latestStrict;
-  const hasUpdate = compareSemver(latestStrict.version, currentVersion) > 0;
-
-  const auditEntry: LocalAuditEntry = {
-    _id: `audit_update_check_${now}`,
-    name: sanitizeText(actorName, 80),
-    action: "system.update_check",
-    detail: hasUpdate
-      ? `Checked for software updates on ${channel}: v${latestStrict.version} available (current v${currentVersion})`
-      : `Checked for software updates on ${channel}: system is on v${currentVersion} (next OTA build v${nextAvailable.version} ready)`,
-    ok: true,
-    at: now,
-  };
-
-  state = {
-    ...state,
-    systemConfig: {
-      ...state.systemConfig,
-      releaseChannel: channel,
-      lastUpdateCheckAt: now,
-    },
-    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
-  };
-  saveAndNotify();
-
-  return {
-    hasUpdate,
-    currentVersion,
-    latestRelease: hasUpdate ? latestStrict : nextAvailable,
-    newerReleases: newerInStrict,
-    allReleases: catalog,
-  };
-}
-
-/**
- * Hosted-safe asynchronous update checker that probes `/version.json` (with cache-busting)
- * and inspects Service Worker registration status without ever failing on static/cloud hosts.
- */
-export async function checkHostedSoftwareUpdates(
-  actorName = "System Admin",
-  targetChannel?: SystemConfig["releaseChannel"]
-): Promise<{
-  hasUpdate: boolean;
-  currentVersion: string;
-  latestRelease: SoftwareReleaseDefinition;
-  nextUpgradeVersion: string;
-  hostMode: "cloud_hosted" | "local_host" | "offline_pwa";
-  swActive: boolean;
-  consoleLines: string[];
-}> {
-  const ts = () => new Date().toLocaleTimeString();
-  const logs: string[] = [];
-  const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
-  const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
-  const hostMode: "cloud_hosted" | "local_host" | "offline_pwa" = !isOnline
-    ? "offline_pwa"
-    : hostname === "localhost" || hostname === "127.0.0.1" || /^192\.168\.|^10\./.test(hostname)
-      ? "local_host"
-      : "cloud_hosted";
-
-  logs.push(`[${ts()}] $ tfsecure-updater --check --env="${hostMode}" --host="${hostname}"`);
-
-  // 1. Probe hosted /version.json manifest safely
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 3500);
-    const resp = await fetch(`/version.json?t=${Date.now()}`, {
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (resp.ok) {
-      const manifest = await resp.json();
-      if (manifest && Array.isArray(manifest.releases)) {
-        for (const r of manifest.releases) {
-          if (r && typeof r.version === "string") {
-            const cleanVer = r.version.replace(/^v/i, "");
-            if (!AVAILABLE_SOFTWARE_RELEASES.some(x => x.version === cleanVer)) {
-              AVAILABLE_SOFTWARE_RELEASES.push({
-                version: cleanVer,
-                channel: r.channel || "Production",
-                commitHash: r.commitHash || generateCommitHash(),
-                releasedAt: r.releasedAt || new Date().toISOString().slice(0, 10),
-                summary: r.summary || `Hosted Release v${cleanVer}`,
-                changelog: Array.isArray(r.changelog) ? r.changelog : [r.summary || `Release v${cleanVer}`],
-              });
-            }
-          }
-        }
-        AVAILABLE_SOFTWARE_RELEASES.sort((a, b) => compareSemver(a.version, b.version));
-      }
-      logs.push(
-        `[${ts()}] Hosted manifest (/version.json) verified: catalog latest v${manifest.latestVersion || "2.6.1"} (${manifest.commitHash || "d49a82c"}).`
-      );
-    } else {
-      logs.push(`[${ts()}] Static host returned HTTP ${resp.status}; using embedded release catalog.`);
-    }
-  } catch {
-    logs.push(`[${ts()}] Network/manifest probe skipped or offline; using embedded release catalog.`);
-  }
-
-  // 2. Inspect PWA Service Worker status
-  let swActive = false;
-  try {
-    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg) {
-        swActive = true;
-        await reg.update().catch(() => {});
-        logs.push(`[${ts()}] PWA Service Worker active and checked for updated precache manifest.`);
-      } else {
-        logs.push(`[${ts()}] Service Worker standby (standard browser runtime active).`);
-      }
-    }
-  } catch {
-    // ignore SW restriction
-  }
-
-  const baseCheck = checkForSoftwareUpdates(actorName, targetChannel);
-  const nextUpgradeVersion =
-    compareSemver(baseCheck.latestRelease.version, baseCheck.currentVersion) > 0
-      ? baseCheck.latestRelease.version
-      : incrementPatchVersion(baseCheck.currentVersion);
-
-  if (baseCheck.hasUpdate) {
-    logs.push(
-      `[${ts()}] UPDATE AVAILABLE: v${baseCheck.currentVersion} -> v${baseCheck.latestRelease.version} (${baseCheck.latestRelease.commitHash})`
-    );
-  } else {
-    logs.push(
-      `[${ts()}] Installed v${baseCheck.currentVersion} matches latest catalog release. Next OTA build target: v${nextUpgradeVersion}.`
-    );
-  }
-
-  return {
-    hasUpdate: baseCheck.hasUpdate,
-    currentVersion: baseCheck.currentVersion,
-    latestRelease: baseCheck.latestRelease,
-    nextUpgradeVersion,
-    hostMode,
-    swActive,
-    consoleLines: logs,
-  };
-}
-
-export function applySoftwareUpdate(params: {
-  actorName?: string;
-  targetVersion?: string;
-  targetChannel?: SystemConfig["releaseChannel"];
-  source?: SoftwareUpdateRecord["source"];
-  customSummary?: string;
-  customChangelog?: string[];
-  gitBranch?: string;
-  allowSameOrDowngrade?: boolean;
-}): { config: SystemConfig; record: SoftwareUpdateRecord } {
-  const now = Date.now();
-  const actorName = sanitizeText(params.actorName || "System Admin", 80);
-  const prevVersion = state.systemConfig.systemVersion || "2.4.2";
-  const channel = params.targetChannel ?? state.systemConfig.releaseChannel;
-  const source = params.source ?? "release_upgrade";
-  const dynamicCatalog = getDynamicReleaseCatalog(state.systemConfig);
-
-  const requestedClean = params.targetVersion ? params.targetVersion.replace(/^v/i, "").trim() : "";
-
-  let nextVersion = requestedClean;
-  if (!nextVersion) {
-    const newer = AVAILABLE_SOFTWARE_RELEASES.filter(r => compareSemver(r.version, prevVersion) > 0);
-    nextVersion = newer.length > 0 ? newer[newer.length - 1].version : incrementPatchVersion(prevVersion);
-  } else if (
-    !params.allowSameOrDowngrade &&
-    source !== "rollback" &&
-    compareSemver(nextVersion, prevVersion) <= 0
-  ) {
-    // If the user clicked Upgrade or Pull Latest while the dropdown was still pointing at the current or older version,
-    // automatically advance to the next higher release in the catalog or increment the patch version so the upgrade never stalls!
-    const newerCatalog = AVAILABLE_SOFTWARE_RELEASES.filter(r => compareSemver(r.version, prevVersion) > 0);
-    nextVersion =
-      newerCatalog.length > 0
-        ? newerCatalog[newerCatalog.length - 1].version
-        : incrementPatchVersion(prevVersion);
-  }
-
-  const catalogMatch =
-    AVAILABLE_SOFTWARE_RELEASES.find(r => r.version === nextVersion) ??
-    dynamicCatalog.find(r => r.version === nextVersion);
-
-  const commitHash =
-    catalogMatch && catalogMatch.commitHash && catalogMatch.commitHash !== "ota-next"
-      ? catalogMatch.commitHash
-      : generateCommitHash();
-
-  const summary =
-    sanitizeText(params.customSummary, 160) ||
-    catalogMatch?.summary ||
-    (source === "repo_pull"
-      ? `Synchronized release branch (${params.gitBranch || state.systemConfig.gitBranch || "main"}) & applied OTA build v${nextVersion}`
-      : `Upgraded system software to v${nextVersion} (${channel})`);
-
-  const changelog =
-    params.customChangelog && params.customChangelog.length > 0
-      ? params.customChangelog.map(c => sanitizeText(c, 160)).filter(Boolean)
-      : catalogMatch?.changelog ?? [
-          `Synchronized release manifest from ${state.systemConfig.gitRemoteUrl || "origin/main"} (${commitHash})`,
-          "Verified Convex schema, RBAC permission matrix, and CSRF session tokens",
-          "Refreshed PWA Service Worker cache and hot-reloaded runtime configuration",
-        ];
-
-  const record: SoftwareUpdateRecord = {
-    id: `upd_${now}_${commitHash}`,
-    version: nextVersion,
-    previousVersion: prevVersion,
-    channel,
-    commitHash,
-    source,
-    summary,
-    changelog,
-    updatedBy: actorName,
-    updatedAt: now,
-  };
-
-  const existingHistory = state.systemConfig.updateHistory ?? DEFAULT_SYSTEM_CONFIG.updateHistory ?? [];
-  const nextConfig: SystemConfig = {
-    ...state.systemConfig,
-    systemVersion: nextVersion,
-    buildCommit: commitHash,
-    gitBranch: sanitizeText(params.gitBranch || state.systemConfig.gitBranch || "main", 40) || "main",
-    releaseChannel: channel,
-    lastUpdatedAt: now,
-    lastUpdateCheckAt: now,
-    updateHistory: [record, ...existingHistory].slice(0, 40),
-  };
-
-  const auditEntry: LocalAuditEntry = {
-    _id: `audit_sysupdate_${now}`,
-    name: actorName,
-    action: "system.update",
-    detail:
-      source === "repo_pull"
-        ? `Executed repository & hosted OTA sync (${nextConfig.gitBranch}) -> v${nextVersion} [${commitHash}] (${channel})`
-        : `Upgraded system software v${prevVersion} -> v${nextVersion} [${commitHash}] (${channel})`,
-    ok: true,
-    at: now,
-  };
-
-  const notifEntry: LocalNotificationEntry = {
-    _id: `notif_sysupdate_${now}`,
-    kind: "security",
-    message: `Software upgraded to v${nextVersion} (${commitHash} · ${channel}) by ${actorName}`,
-    at: now,
-    read: false,
-  };
-
-  state = {
-    ...state,
-    systemConfig: nextConfig,
-    localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
-    localNotifications: [notifEntry, ...state.localNotifications].slice(0, 100),
-  };
-  saveAndNotify();
-  playNotificationDingDong();
-  return { config: nextConfig, record };
-}
-
-/**
- * Fault-tolerant, multi-stage Hosted & Local Update/Upgrade Pipeline.
- * Works reliably on Cloud Run, static hosts, Docker containers, iOS/Android PWAs, and local workstations.
- * Automatically creates a pre-upgrade snapshot, probes `/version.json`, synchronizes Service Worker caches,
- * applies the upgrade, and rolls back automatically if any unexpected exception occurs.
- */
-export async function executeHostedSoftwareUpgrade(params: {
-  actorName?: string;
-  targetVersion?: string;
-  targetChannel?: SystemConfig["releaseChannel"];
-  source?: SoftwareUpdateRecord["source"];
-  customSummary?: string;
-  gitBranch?: string;
-}): Promise<{
-  ok: boolean;
-  config: SystemConfig;
-  record?: SoftwareUpdateRecord;
-  consoleLines: string[];
-  error?: string;
-}> {
-  const ts = () => new Date().toLocaleTimeString();
-  const logs: string[] = [];
-  const snapshot: SystemConfig = JSON.parse(JSON.stringify(state.systemConfig));
-  const prevVersion = snapshot.systemVersion || "2.4.2";
-  const branch = sanitizeText(params.gitBranch || snapshot.gitBranch || "main", 40) || "main";
-  const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
-  const isLocalHost =
-    hostname === "localhost" || hostname === "127.0.0.1" || /^192\.168\.|^10\./.test(hostname);
-
-  try {
-    // Stage 1: Pre-Upgrade Snapshot & Integrity Check
-    logs.push(
-      `[${ts()}] [1/4] Created pre-upgrade recovery snapshot (v${prevVersion} · commit ${snapshot.buildCommit || "b4e82a9"}).`
-    );
-
-    // Stage 2: Hosted Manifest / Repository Sync
-    if (params.source === "repo_pull") {
-      if (isLocalHost) {
-        logs.push(`[${ts()}] [2/4] Synchronizing local repository branch 'origin/${branch}' & release manifest…`);
-      } else {
-        logs.push(
-          `[${ts()}] [2/4] Hosted cloud environment detected (${hostname}) — using Zero-Downtime OTA Manifest Sync for 'origin/${branch}'…`
-        );
-      }
-    } else {
-      logs.push(
-        `[${ts()}] [2/4] Fetching release package metadata from /version.json for channel '${params.targetChannel || snapshot.releaseChannel}'…`
-      );
-    }
-
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 3500);
-      const resp = await fetch(`/version.json?t=${Date.now()}`, {
-        cache: "no-store",
-        signal: ctrl.signal,
-      });
-      clearTimeout(timer);
-      if (resp.ok) {
-        const manifest = await resp.json();
-        logs.push(
-          `[${ts()}] Verified hosted release manifest (engine: ${manifest.engine || "Jusclick-TeQiQ OTA"}, SHA-256 integrity OK).`
-        );
-      }
-    } catch {
-      logs.push(`[${ts()}] Using embedded cryptographic release bundle (offline/air-gapped fallback active).`);
-    }
-
-    // Stage 3: Service Worker & Runtime Cache Synchronization
-    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-      try {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        for (const reg of registrations) {
-          await reg.update().catch(() => {});
-          if (reg.waiting) {
-            reg.waiting.postMessage({ type: "SKIP_WAITING" });
-          }
-        }
-        if (typeof caches !== "undefined") {
-          const cacheKeys = await caches.keys();
-          for (const key of cacheKeys) {
-            if (key.includes("version-manifest") || key.includes("outdated")) {
-              await caches.delete(key).catch(() => {});
-            }
-          }
-        }
-        logs.push(
-          `[${ts()}] [3/4] Synchronized PWA Service Worker & refreshed runtime asset cache (${registrations.length} worker(s)).`
-        );
-      } catch {
-        logs.push(`[${ts()}] [3/4] Verified browser runtime cache consistency.`);
-      }
-    } else {
-      logs.push(`[${ts()}] [3/4] Verified browser runtime cache consistency.`);
-    }
-
-    // Stage 4: Apply Upgrade & Persist
-    const { config, record } = applySoftwareUpdate({
-      actorName: params.actorName,
-      targetVersion: params.targetVersion,
-      targetChannel: params.targetChannel,
-      source: params.source,
-      customSummary: params.customSummary,
-      gitBranch: branch,
-    });
-
-    logs.push(
-      `[${ts()}] [4/4] UPGRADE COMPLETE: v${prevVersion} -> v${config.systemVersion} (commit ${record.commitHash} · ${config.releaseChannel}).`
-    );
-
-    return {
-      ok: true,
-      config,
-      record,
-      consoleLines: logs,
-    };
-  } catch (err: unknown) {
-    // Automatic rollback to pre-upgrade snapshot so the system never fails in an inconsistent state
-    state = {
-      ...state,
-      systemConfig: snapshot,
-    };
-    saveAndNotify();
-    const errMsg = err instanceof Error ? err.message : "Unexpected error during update";
-    logs.push(`[${ts()}] [RECOVERY] Restored pre-upgrade snapshot v${snapshot.systemVersion}: ${errMsg}`);
-    return {
-      ok: false,
-      config: snapshot,
-      consoleLines: logs,
-      error: errMsg,
-    };
-  }
-}
-
-/**
- * Generates and downloads a signed `.json` software upgrade package that can be uploaded
- * via "Upload Software Patch (.json)" on any hosted or offline gate terminal.
- */
-export function exportSignedSoftwarePatchJson(params: {
-  actorName?: string;
-  targetVersion?: string;
-  channel?: SystemConfig["releaseChannel"];
-  summary?: string;
-}) {
-  const catalog = getDynamicReleaseCatalog(state.systemConfig);
-  const version =
-    params.targetVersion?.replace(/^v/i, "").trim() ||
-    incrementPatchVersion(state.systemConfig.systemVersion || "2.6.1");
-  const match = catalog.find(r => r.version === version);
-  const channel = params.channel || state.systemConfig.releaseChannel || "Production";
-  const commitHash =
-    match && match.commitHash !== "ota-next" ? match.commitHash : generateCommitHash();
-  const summary =
-    params.summary?.trim() ||
-    match?.summary ||
-    `Signed TFsecure OTA Upgrade Package v${version} (${channel})`;
-  const changelog = match?.changelog || [
-    `Upgraded runtime to v${version} (${commitHash})`,
-    "Synchronized security policies, Act 843 compliance gate, and PWA offline assets",
-  ];
-
-  const payload = {
-    packageSchema: "tfsecure_ota_patch_v2",
-    version,
-    channel,
-    commitHash,
-    summary,
-    changelog,
-    createdBy: params.actorName || "System Admin",
-    createdAt: new Date().toISOString(),
-  };
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], {
-    type: "application/json;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `tfsecure-upgrade-v${version}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
-}
-
-export function rollbackSoftwareVersion(
-  targetVersion: string,
-  actorName = "System Admin"
-): { ok: boolean; config?: SystemConfig; error?: string } {
-  const cleanTarget = sanitizeText(targetVersion, 24).replace(/^v/i, "");
-  if (!cleanTarget) {
-    return { ok: false, error: "Invalid target version for rollback." };
-  }
-  const prevVersion = state.systemConfig.systemVersion || "2.4.2";
-  if (cleanTarget === prevVersion) {
-    return { ok: false, error: `System is already running v${cleanTarget}.` };
-  }
-  const res = applySoftwareUpdate({
-    actorName,
-    targetVersion: cleanTarget,
-    source: "rollback",
-    allowSameOrDowngrade: true,
-    customSummary: `Rolled back system software from v${prevVersion} to v${cleanTarget}`,
-    customChangelog: [
-      `Restored runtime version target to v${cleanTarget}`,
-      "Verified backward-compatible database and local registry state",
-    ],
-  });
-  return { ok: true, config: res.config };
-}
-
-export function applySoftwarePatchFileJson(
-  rawJson: string,
-  actorName = "System Admin"
-): { ok: boolean; error?: string; summary?: string } {
-  try {
-    const parsed = JSON.parse(rawJson);
-    if (!parsed || typeof parsed !== "object") {
-      return { ok: false, error: "Invalid software patch package JSON." };
-    }
-    const patchVersion =
-      typeof parsed.version === "string" && parsed.version.trim()
-        ? sanitizeText(parsed.version.trim().replace(/^v/i, ""), 24)
-        : incrementPatchVersion(state.systemConfig.systemVersion || "2.5.0");
-    const patchChannel =
-      parsed.channel === "Production" || parsed.channel === "Enterprise LTS" || parsed.channel === "Staging"
-        ? parsed.channel
-        : state.systemConfig.releaseChannel;
-    const patchSummary =
-      typeof parsed.summary === "string" && parsed.summary.trim()
-        ? parsed.summary.trim()
-        : `Applied offline software update package v${patchVersion}`;
-    const patchNotes = Array.isArray(parsed.changelog)
-      ? parsed.changelog.map((x: unknown) => String(x))
-      : ["Applied signed JSON software update manifest"];
-
-    if (parsed.configPatch && typeof parsed.configPatch === "object") {
-      updateSystemConfig(parsed.configPatch, actorName, `Applied config from software patch v${patchVersion}`);
-    }
-
-    const { record } = applySoftwareUpdate({
-      actorName,
-      targetVersion: patchVersion,
-      targetChannel: patchChannel,
-      source: "patch_upload",
-      allowSameOrDowngrade: true,
-      customSummary: patchSummary,
-      customChangelog: patchNotes,
-    });
-
-    return {
-      ok: true,
-      summary: `Installed software update package v${record.version} (commit ${record.commitHash}) on ${record.channel} channel.`,
-    };
-  } catch {
-    return { ok: false, error: "Failed to parse software update JSON package." };
-  }
-}
-
-export function runSystemUpdateCheck(actorName = "System Admin", targetChannel?: SystemConfig["releaseChannel"]) {
-  return applySoftwareUpdate({
-    actorName,
-    targetChannel,
-    source: "release_upgrade",
-  }).config;
-}
-
 export function exportSystemBackupJson(actorName = "System Admin", extraMetadata?: Record<string, unknown>) {
   const now = Date.now();
   const nextConfig: SystemConfig = {
@@ -2035,7 +1600,6 @@ export function exportSystemBackupJson(actorName = "System Admin", extraMetadata
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  playNotificationDingDong();
 }
 
 export function recordPolicyAcceptance(params: {
@@ -2222,7 +1786,6 @@ export function restoreSystemBackupJson(
       },
     };
     saveAndNotify();
-    playNotificationDingDong();
     return {
       ok: true,
       summary: `Restored ${restoredOnSite.length} gate records, ${Object.keys(state.invitedUsers).length} invitations, and system configuration.`,
@@ -2232,11 +1795,36 @@ export function restoreSystemBackupJson(
   }
 }
 
-export function markAllLocalNotificationsRead() {
-  if (!state.localNotifications.some(n => !n.read)) return;
+export function markAllLocalNotificationsRead(me?: {
+  userId?: string;
+  name?: string;
+  email?: string;
+  role?: string;
+} | null) {
+  let changed = false;
+  const next = state.localNotifications.map(n => {
+    if (n.read) return n;
+    if (!me) {
+      changed = true;
+      return { ...n, read: true };
+    }
+    if (isVisitNotification(n)) {
+      if (isNotificationForHostUser(n, me)) {
+        changed = true;
+        return { ...n, read: true };
+      }
+      return n;
+    }
+    if (me.role === "admin" || me.role === "security") {
+      changed = true;
+      return { ...n, read: true };
+    }
+    return n;
+  });
+  if (!changed) return;
   state = {
     ...state,
-    localNotifications: state.localNotifications.map(n => ({ ...n, read: true })),
+    localNotifications: next,
   };
   saveAndNotify();
 }
@@ -2554,7 +2142,6 @@ export function approveUserAccount(profileId: string, email?: string, actorName 
     localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
   saveAndNotify();
-  playNotificationDingDong();
 }
 
 export function revokeUserApproval(profileId: string, email?: string, actorName = "System Admin") {
@@ -3273,14 +2860,25 @@ export async function validateLocalPasscode(
 
   const nextNotifs = [...state.localNotifications];
   if (result === "granted") {
-    nextNotifs.unshift({
-      _id: `notif_arrival_${now}`,
+    const notifId = `notif_arrival_${targetId ?? now}`;
+    const existingIdx = nextNotifs.findIndex(n => n._id === notifId);
+    const arrivalNotif: LocalNotificationEntry = {
+      _id: notifId,
       kind: "arrival",
       message: `${visitorName} (${localRow?.kind ?? attached?.kind ?? "visitor"}) has arrived at the gate`,
       at: now,
       read: false,
       targetUserId: issuedBy,
-    });
+      targetHostName: hostName,
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      passcodeId: targetId,
+    };
+    if (existingIdx >= 0) {
+      nextNotifs[existingIdx] = arrivalNotif;
+    } else {
+      nextNotifs.unshift(arrivalNotif);
+    }
   }
 
   state = {
@@ -3290,6 +2888,7 @@ export async function validateLocalPasscode(
     localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
     localNotifications: nextNotifs.slice(0, 100),
   };
+  markGateOperatorActionOnThisDevice();
   saveAndNotify();
 
   return {
@@ -3371,8 +2970,8 @@ export function recordGateDenial(params: {
     onSiteRecords: nextOnSite,
     localAuditEntries: [auditEntry, ...state.localAuditEntries].slice(0, 300),
   };
+  markGateOperatorActionOnThisDevice();
   saveAndNotify();
-  playNotificationDingDong();
 }
 
 export function getNextAvailableBadge(activeBadges: string[]): string {
@@ -3423,6 +3022,31 @@ export function recordGuestCheckIn(record: Omit<OnSiteRecord, "id">): OnSiteReco
     at: full.checkedInAt,
   };
 
+  const linkedLocalPc = full.passcodeId
+    ? state.localPasscodes.find(p => p._id === full.passcodeId)
+    : full.codeHash
+    ? state.localPasscodes.find(p => p.codeHash === full.codeHash)
+    : undefined;
+  const linkedAtt =
+    (full.passcodeId ? state.attachmentsByPasscodeId[full.passcodeId] : undefined) ??
+    (full.codeHash ? state.attachmentsByHash[full.codeHash] : undefined);
+  const resolvedHostUserId =
+    full.issuedByUserId ?? linkedLocalPc?.issuedBy ?? linkedAtt?.issuedByUserId;
+
+  const checkinNotifId = `notif_arrival_${full.passcodeId ?? full.id}`;
+  const checkinNotification: LocalNotificationEntry = {
+    _id: checkinNotifId,
+    kind: "arrival",
+    message: `${full.visitorName} (${full.kind}) checked in at the gate · Badge ${full.badgeNumber}`,
+    at: full.checkedInAt,
+    read: false,
+    targetUserId: resolvedHostUserId,
+    targetHostName: full.hostName,
+    actorUserId: full.checkedInByUserId,
+    actorName: full.checkedInBy,
+    passcodeId: full.passcodeId,
+  };
+
   state = {
     ...state,
     onSiteRecords: nextList,
@@ -3430,9 +3054,13 @@ export function recordGuestCheckIn(record: Omit<OnSiteRecord, "id">): OnSiteReco
       checkinAudit,
       ...state.localAuditEntries.filter(a => a._id !== checkinAudit._id),
     ].slice(0, 300),
+    localNotifications: [
+      checkinNotification,
+      ...state.localNotifications.filter(n => n._id !== checkinNotifId),
+    ].slice(0, 100),
   };
+  markGateOperatorActionOnThisDevice();
   saveAndNotify();
-  playNotificationDingDong();
   return full;
 }
 
@@ -3440,6 +3068,7 @@ export function recordGuestCheckOut(params: {
   recordId?: string;
   passcodeId?: string;
   checkedOutBy: string;
+  checkedOutByUserId?: string;
   checkoutNotes?: string;
   fallbackVisitor?: {
     visitorName: string;
@@ -3471,6 +3100,7 @@ export function recordGuestCheckOut(params: {
       ...nextList[idx],
       checkedOutAt: Math.max(now, nextList[idx].checkedInAt),
       checkedOutBy: cleanBy,
+      checkedOutByUserId: params.checkedOutByUserId,
       checkoutNotes: cleanNotes,
     };
     nextList[idx] = checkedOutRecord;
@@ -3492,6 +3122,7 @@ export function recordGuestCheckOut(params: {
       checkedInBy: "Gate Security",
       checkedOutAt: Math.max(now, params.fallbackVisitor.checkedInAt),
       checkedOutBy: cleanBy,
+      checkedOutByUserId: params.checkedOutByUserId,
       checkoutNotes: cleanNotes,
     };
     nextList.unshift(checkedOutRecord);
@@ -3512,6 +3143,18 @@ export function recordGuestCheckOut(params: {
   const deptName = checkedOutRecord?.deptName ?? params.fallbackVisitor?.deptName ?? "Department";
   const badgeNumber = checkedOutRecord?.badgeNumber ?? "GATE-PASS";
 
+  const linkedLocalPc = params.passcodeId
+    ? state.localPasscodes.find(p => p._id === params.passcodeId)
+    : undefined;
+  const linkedAtt = params.passcodeId
+    ? state.attachmentsByPasscodeId[params.passcodeId]
+    : undefined;
+  const resolvedHostUserId =
+    checkedOutRecord?.issuedByUserId ??
+    params.fallbackVisitor?.issuedByUserId ??
+    linkedLocalPc?.issuedBy ??
+    linkedAtt?.issuedByUserId;
+
   const checkoutAudit: LocalAuditEntry = {
     _id: `audit_checkout_${params.passcodeId ?? checkedOutRecord?.id ?? now}`,
     name: cleanBy,
@@ -3521,13 +3164,18 @@ export function recordGuestCheckOut(params: {
     at: now,
   };
 
+  const checkoutNotifId = `notif_checkout_${params.passcodeId ?? checkedOutRecord?.id ?? now}`;
   const checkoutNotification: LocalNotificationEntry = {
-    _id: `notif_checkout_${params.passcodeId ?? now}`,
+    _id: checkoutNotifId,
     kind: "checkout",
     message: `${visitorName} (${kind}) checked out via ${cleanBy} · ${cleanNotes}`,
     at: now,
     read: false,
-    targetUserId: checkedOutRecord?.issuedByUserId ?? params.fallbackVisitor?.issuedByUserId,
+    targetUserId: resolvedHostUserId,
+    targetHostName: hostName,
+    actorUserId: params.checkedOutByUserId,
+    actorName: cleanBy,
+    passcodeId: params.passcodeId,
   };
 
   state = {
@@ -3538,10 +3186,13 @@ export function recordGuestCheckOut(params: {
       checkoutAudit,
       ...state.localAuditEntries.filter(a => a._id !== checkoutAudit._id),
     ].slice(0, 300),
-    localNotifications: [checkoutNotification, ...state.localNotifications].slice(0, 100),
+    localNotifications: [
+      checkoutNotification,
+      ...state.localNotifications.filter(n => n._id !== checkoutNotifId),
+    ].slice(0, 100),
   };
+  markGateOperatorActionOnThisDevice();
   saveAndNotify();
-  playNotificationDingDong();
 }
 
 export function useGateRegistry() {

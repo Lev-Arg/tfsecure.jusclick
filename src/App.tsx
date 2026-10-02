@@ -56,24 +56,15 @@ import {
   PlatformInstallerAndSetupCenter,
 } from "./components/PlatformInstallerAndSetup";
 import {
-  AVAILABLE_SOFTWARE_RELEASES,
   CURRENT_POLICY_VERSION,
   addLocalDepartment,
-  applySoftwarePatchFileJson,
-  applySoftwareUpdate,
   approveUserAccount,
-  checkForSoftwareUpdates,
-  checkHostedSoftwareUpdates,
-  compareSoftwareVersions,
   downloadCsv,
   ensureFirstAccountAndInvites,
-  executeHostedSoftwareUpgrade,
-  exportSignedSoftwarePatchJson,
   exportSystemBackupJson,
   getAttachmentByName,
   getAttachmentByPasscodeId,
   getCsrfToken,
-  getDynamicReleaseCatalog,
   getEffectiveDepartmentId,
   getEffectiveRole,
   getMergedAuditLedger,
@@ -81,11 +72,12 @@ import {
   getMergedPasscodes,
   getMergedUserDirectory,
   hasUserAcceptedPolicy,
-  incrementPatchVersion,
   inviteUserAccount,
+  isNotificationForHostUser,
   isNotificationSoundMuted,
   isPrimaryBootstrapAdmin,
   isProfileApproved,
+  isVisitNotification,
   issueLocalPasscode,
   markAllLocalNotificationsRead,
   optimizeImageFileToDataUrl,
@@ -101,8 +93,6 @@ import {
   restoreSystemBackupJson,
   revokeLocalPasscode,
   revokeUserApproval,
-  rollbackSoftwareVersion,
-  runSystemUpdateCheck,
   sanitizeText,
   setNotificationSoundMuted,
   setUserDepartmentOverride,
@@ -110,6 +100,7 @@ import {
   updateSystemConfig,
   useGateRegistry,
   verifyCsrfToken,
+  wasGateActionPerformedOnThisDeviceRecently,
   type RoleType,
   type SystemConfig,
 } from "./lib/gateRegistry";
@@ -1169,9 +1160,6 @@ function Dashboard({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Activity size={16} style={{ color: "var(--sig)" }} />
               <h2 className="panel-title">Live Production Analytics</h2>
-              <span className="meta-inline mono">
-                · v{registry.systemConfig.systemVersion} ({registry.systemConfig.releaseChannel})
-              </span>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button type="button" onClick={exportAnalyticsCsv}>
@@ -1182,11 +1170,7 @@ function Dashboard({
                 <Download size={14} />
                 <span>Local Setup &amp; Apps (iOS / Android / Windows)</span>
               </button>
-              <button type="button" className="pri" onClick={() => onNavigate("Settings:updates")}>
-                <RefreshCw size={14} />
-                <span>Update System / Software (v{registry.systemConfig.systemVersion})</span>
-              </button>
-              <button type="button" onClick={() => onNavigate("Settings")}>
+              <button type="button" className="pri" onClick={() => onNavigate("Settings")}>
                 <SettingsIcon size={14} />
                 <span>Configure System</span>
               </button>
@@ -2885,7 +2869,7 @@ function Settings({
   theme: "light" | "dark";
   onToggleTheme: () => void;
   meName: string;
-  initialSection?: "theme" | "images" | "updates" | "setup" | "analytics" | "backup";
+  initialSection?: "theme" | "images" | "setup" | "analytics" | "backup";
 }) {
   const s = useBranding();
   const save = useMutation(api.settings.update);
@@ -2893,7 +2877,7 @@ function Settings({
   const registry = useGateRegistry();
   const { activeOnSite, checkedOutHistory } = useUnifiedOnSiteList();
 
-  const [section, setSection] = useState<"theme" | "images" | "updates" | "setup" | "analytics" | "backup">(initialSection);
+  const [section, setSection] = useState<"theme" | "images" | "setup" | "analytics" | "backup">(initialSection);
   const [f, setF] = useState<{ orgName: string; accent: string; defaultHours: number; maxHours: number } | null>(null);
   const [bannerTitleInput, setBannerTitleInput] = useState(registry.systemConfig.bannerTitle);
   const [logoUrlInput, setLogoUrlInput] = useState(registry.systemConfig.customLogoUrl ?? "");
@@ -2908,37 +2892,8 @@ function Settings({
   const [capacityInput, setCapacityInput] = useState(registry.systemConfig.siteCapacityLimit);
   const [requireApprovalInput, setRequireApprovalInput] = useState(registry.systemConfig.requireAdminApproval);
   const [autoOverstayInput, setAutoOverstayInput] = useState(registry.systemConfig.autoFlagOverstays);
-  const [releaseChannelInput, setReleaseChannelInput] = useState<SystemConfig["releaseChannel"]>(
-    registry.systemConfig.releaseChannel
-  );
-  const dynamicReleases = useMemo(
-    () => getDynamicReleaseCatalog(registry.systemConfig),
-    [registry.systemConfig]
-  );
-  const nextUpgradeTarget = useMemo(() => {
-    const newer = dynamicReleases.filter(
-      r => compareSoftwareVersions(r.version, registry.systemConfig.systemVersion) > 0
-    );
-    return newer.length > 0
-      ? newer[newer.length - 1].version
-      : incrementPatchVersion(registry.systemConfig.systemVersion);
-  }, [dynamicReleases, registry.systemConfig.systemVersion]);
-
-  const [selectedTargetVersion, setSelectedTargetVersion] = useState<string>(nextUpgradeTarget);
-  const [gitBranchInput, setGitBranchInput] = useState<string>(registry.systemConfig.gitBranch || "main");
-  const [customUpdateSummary, setCustomUpdateSummary] = useState<string>("");
-  const [updateConsoleLines, setUpdateConsoleLines] = useState<string[]>([
-    `[SYSTEM] TFsecure Runtime v${registry.systemConfig.systemVersion} (${registry.systemConfig.buildCommit || "b4e82a9"}) ready.`,
-    `[HOST] Zero-Downtime Hosted OTA & Repository Sync Engine active (branch '${registry.systemConfig.gitBranch || "main"}').`,
-  ]);
-  const [updatingSoftware, setUpdatingSoftware] = useState(false);
-  const [copiedCli, setCopiedCli] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    setSelectedTargetVersion(nextUpgradeTarget);
-  }, [nextUpgradeTarget]);
 
   useEffect(() => {
     setSection(initialSection);
@@ -3058,7 +3013,6 @@ function Settings({
         );
         setMsg({ ok: true, text: `Dashboard / Workspace background (${file.name}) uploaded and saved.` });
       }
-      playNotificationDingDong();
     } catch (err: any) {
       setMsg({ ok: false, text: err?.message ?? "Failed to process uploaded image." });
     } finally {
@@ -3111,167 +3065,24 @@ function Settings({
       meName,
       `Saved system images (loginBg: ${effectiveLoginMode}, workspaceBg: ${effectiveWorkspaceMode}, customLogo: ${cleanLogo ? "yes" : "default"})`
     );
-    playNotificationDingDong();
     setMsg({ ok: true, text: "System images and background media saved." });
   };
 
-  const handleSavePoliciesAndUpdate = async () => {
+  const handleSavePolicies = () => {
     if (!verifyCsrfToken(getCsrfToken())) return;
-    setUpdatingSoftware(true);
-    try {
-      updateSystemConfig(
-        {
-          siteCapacityLimit: Math.max(10, Math.min(5000, Number(capacityInput) || 100)),
-          requireAdminApproval: requireApprovalInput,
-          autoFlagOverstays: autoOverstayInput,
-          releaseChannel: releaseChannelInput,
-        },
-        meName,
-        `Updated production policies (capacity: ${capacityInput}, approvalGate: ${requireApprovalInput})`
-      );
-      const res = await executeHostedSoftwareUpgrade({
-        actorName: meName,
-        targetChannel: releaseChannelInput,
-        source: "release_upgrade",
-      });
-      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
-      setMsg({
-        ok: res.ok,
-        text: res.ok
-          ? `System policies saved and runtime upgraded to v${res.config.systemVersion} (${res.config.releaseChannel} channel).`
-          : res.error ?? "System update encountered an issue.",
-      });
-    } finally {
-      setUpdatingSoftware(false);
-    }
-  };
-
-  const handleCheckSoftwareUpdates = async () => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    setUpdatingSoftware(true);
-    setMsg(null);
-    try {
-      const res = await checkHostedSoftwareUpdates(meName, releaseChannelInput);
-      setSelectedTargetVersion(res.nextUpgradeVersion);
-      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
-      if (res.hasUpdate) {
-        setMsg({
-          ok: true,
-          text: `Update available on ${releaseChannelInput} channel: v${res.currentVersion} → v${res.latestRelease.version} (${res.latestRelease.summary})`,
-        });
-      } else {
-        setMsg({
-          ok: true,
-          text: `Verified hosted manifest (/version.json) & Service Worker: running v${res.currentVersion}. Next OTA build v${res.nextUpgradeVersion} is ready to install.`,
-        });
-      }
-    } finally {
-      setUpdatingSoftware(false);
-    }
-  };
-
-  const handleGitPullUpdate = async () => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    setUpdatingSoftware(true);
-    setMsg(null);
-    const branch = sanitizeText(gitBranchInput, 40) || "main";
-    try {
-      const res = await executeHostedSoftwareUpgrade({
-        actorName: meName,
-        targetChannel: releaseChannelInput,
-        source: "repo_pull",
-        gitBranch: branch,
-        customSummary:
-          customUpdateSummary.trim() ||
-          `Synchronized release branch (origin/${branch}) & applied Hosted OTA upgrade`,
-      });
-      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
-      setCustomUpdateSummary("");
-      if (res.ok && res.record) {
-        setMsg({
-          ok: true,
-          text: `System synchronized (origin/${branch}) and upgraded to v${res.config.systemVersion} [${res.record.commitHash}] on ${res.config.releaseChannel} channel.`,
-        });
-      } else {
-        setMsg({
-          ok: false,
-          text: res.error ?? "Update failed and restored pre-upgrade snapshot.",
-        });
-      }
-    } finally {
-      setUpdatingSoftware(false);
-    }
-  };
-
-  const handleInstallSelectedRelease = async () => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    setUpdatingSoftware(true);
-    setMsg(null);
-    try {
-      const res = await executeHostedSoftwareUpgrade({
-        actorName: meName,
-        targetVersion: selectedTargetVersion,
-        targetChannel: releaseChannelInput,
-        source: "release_upgrade",
-        customSummary: customUpdateSummary.trim() || undefined,
-      });
-      setUpdateConsoleLines(prev => [...prev, ...res.consoleLines]);
-      setCustomUpdateSummary("");
-      if (res.ok && res.record) {
-        setMsg({
-          ok: true,
-          text: `Software upgraded to v${res.config.systemVersion} (commit ${res.record.commitHash}) on ${res.config.releaseChannel} channel.`,
-        });
-      } else {
-        setMsg({
-          ok: false,
-          text: res.error ?? "Upgrade failed and restored pre-upgrade snapshot.",
-        });
-      }
-    } finally {
-      setUpdatingSoftware(false);
-    }
-  };
-
-  const handleUploadPatchPackage = (file: File | undefined, inputEl?: HTMLInputElement | null) => {
-    if (!file) return;
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        const res = applySoftwarePatchFileJson(reader.result, meName);
-        const ts = new Date().toLocaleTimeString();
-        if (res.ok) {
-          setUpdateConsoleLines(prev => [
-            ...prev,
-            `[${ts}] Applied offline software patch file '${file.name}': ${res.summary}`,
-          ]);
-          setMsg({ ok: true, text: res.summary ?? "Software patch applied." });
-        } else {
-          setMsg({ ok: false, text: res.error ?? "Invalid software patch file." });
-        }
-      }
-      if (inputEl) inputEl.value = "";
-    };
-    reader.readAsText(file);
-  };
-
-  const handleRollbackVersion = (version: string) => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
-    const res = rollbackSoftwareVersion(version, meName);
-    const ts = new Date().toLocaleTimeString();
-    if (res.ok && res.config) {
-      setUpdateConsoleLines(prev => [
-        ...prev,
-        `[${ts}] Rolled back system software to v${res.config?.systemVersion} (${res.config?.buildCommit}).`,
-      ]);
-      setMsg({
-        ok: true,
-        text: `System software rolled back to v${res.config.systemVersion}.`,
-      });
-    } else {
-      setMsg({ ok: false, text: res.error ?? "Rollback failed." });
-    }
+    updateSystemConfig(
+      {
+        siteCapacityLimit: Math.max(10, Math.min(5000, Number(capacityInput) || 100)),
+        requireAdminApproval: requireApprovalInput,
+        autoFlagOverstays: autoOverstayInput,
+      },
+      meName,
+      `Updated production security policies (capacity: ${capacityInput}, approvalGate: ${requireApprovalInput})`
+    );
+    setMsg({
+      ok: true,
+      text: "Production security policies saved.",
+    });
   };
 
   const handleRestoreFile = (file: File | undefined) => {
@@ -3305,9 +3116,6 @@ function Settings({
             </button>
             <button type="button" aria-pressed={section === "images"} onClick={() => { setSection("images"); setMsg(null); }}>
               Images &amp; Media
-            </button>
-            <button type="button" aria-pressed={section === "updates"} onClick={() => { setSection("updates"); setMsg(null); }}>
-              Software Update
             </button>
             <button type="button" aria-pressed={section === "setup"} onClick={() => { setSection("setup"); setMsg(null); }}>
               Local Setup &amp; Apps
@@ -3842,340 +3650,13 @@ function Settings({
         </section>
       )}
 
-      {section === "updates" && (
-        <section className="panel">
-          <div className="panel-header">
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <RefreshCw size={16} style={{ color: "var(--sig)" }} />
-              <h2 className="panel-title">System &amp; Software Update Manager</h2>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span className="mono status-ok" style={{ fontSize: 12 }}>
-                Installed: v{registry.systemConfig.systemVersion} ({registry.systemConfig.buildCommit || "b4e82a9"}) ·{" "}
-                {registry.systemConfig.releaseChannel}
-              </span>
-              <button type="button" onClick={handleCheckSoftwareUpdates} disabled={updatingSoftware}>
-                <RefreshCw size={14} />
-                <span>Check for Updates</span>
-              </button>
-              <button type="button" className="pri" onClick={handleGitPullUpdate} disabled={updatingSoftware}>
-                <RefreshCw size={14} />
-                <span>{updatingSoftware ? "Updating…" : `Pull Latest (git pull origin ${gitBranchInput || "main"})`}</span>
-              </button>
-            </div>
-          </div>
-
-          <div
-            className="kpi-strip"
-            style={{ marginBottom: 18, gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))" }}
-          >
-            <div className="kpi-cell">
-              <span className="kpi-label">Installed Version</span>
-              <span className="kpi-value status-ok">v{registry.systemConfig.systemVersion}</span>
-              <span className="meta-inline mono">Commit: {registry.systemConfig.buildCommit || "b4e82a9"}</span>
-            </div>
-            <div className="kpi-cell">
-              <span className="kpi-label">Release Channel</span>
-              <span className="kpi-value" style={{ fontSize: 18 }}>{registry.systemConfig.releaseChannel}</span>
-              <span className="meta-inline mono">Branch: {registry.systemConfig.gitBranch || "main"}</span>
-            </div>
-            <div className="kpi-cell">
-              <span className="kpi-label">Last Software Update</span>
-              <span className="kpi-value" style={{ fontSize: 15 }}>{fmt(registry.systemConfig.lastUpdatedAt)}</span>
-              <span className="meta-inline">
-                Checked: {fmt(registry.systemConfig.lastUpdateCheckAt ?? registry.systemConfig.lastUpdatedAt)}
-              </span>
-            </div>
-            <div className="kpi-cell">
-              <span className="kpi-label">Latest Catalog / OTA Target</span>
-              <span className="kpi-value">
-                v{AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version}
-              </span>
-              <span className="meta-inline">
-                {compareSoftwareVersions(
-                  registry.systemConfig.systemVersion,
-                  AVAILABLE_SOFTWARE_RELEASES[AVAILABLE_SOFTWARE_RELEASES.length - 1].version
-                ) >= 0
-                  ? `Up to date · Next OTA: v${nextUpgradeTarget}`
-                  : "Official upgrade available"}
-              </span>
-            </div>
-          </div>
-
-          <div className="grid-equal-2col" style={{ gap: 16, marginBottom: 16 }}>
-            {/* LEFT: REPOSITORY SYNC & RELEASE UPGRADE */}
-            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
-              <div style={{ fontWeight: 600, marginBottom: 10 }}>
-                1. Hosted OTA Upgrade &amp; Repository Sync (`git pull origin main`)
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div className="grid-equal-2col" style={{ gap: 10 }}>
-                  <div className="field-group">
-                    <label>Target Software Release / OTA Build</label>
-                    <select
-                      value={selectedTargetVersion}
-                      onChange={e => setSelectedTargetVersion(e.target.value)}
-                    >
-                      {dynamicReleases
-                        .slice()
-                        .reverse()
-                        .map(rel => (
-                          <option key={rel.version} value={rel.version}>
-                            v{rel.version}
-                            {rel.version === registry.systemConfig.systemVersion ? " (Installed)" : ""} —{" "}
-                            {rel.summary.slice(0, 42)} ({rel.commitHash})
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                  <div className="field-group">
-                    <label>Release Channel</label>
-                    <select
-                      value={releaseChannelInput}
-                      onChange={e => setReleaseChannelInput(e.target.value as SystemConfig["releaseChannel"])}
-                    >
-                      <option value="Production">Production (Stable)</option>
-                      <option value="Enterprise LTS">Enterprise LTS (Hardened)</option>
-                      <option value="Staging">Staging (Preview)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid-equal-2col" style={{ gap: 10 }}>
-                  <div className="field-group">
-                    <label>Tracked Git Branch</label>
-                    <input
-                      className="mono"
-                      value={gitBranchInput}
-                      onChange={e => setGitBranchInput(e.target.value)}
-                      placeholder="main"
-                    />
-                  </div>
-                  <div className="field-group">
-                    <label>Release / Deployment Note (Optional)</label>
-                    <input
-                      value={customUpdateSummary}
-                      onChange={e => setCustomUpdateSummary(e.target.value)}
-                      placeholder="e.g. Scheduled security & audit patch"
-                    />
-                  </div>
-                </div>
-
-                {(() => {
-                  const selectedRel =
-                    dynamicReleases.find(r => r.version === selectedTargetVersion) ??
-                    dynamicReleases[dynamicReleases.length - 1];
-                  return (
-                    <div
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: 6,
-                        border: "1px solid var(--line)",
-                        background: "var(--surface-solid)",
-                        fontSize: 12.5,
-                      }}
-                    >
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                        Release v{selectedRel.version} ({selectedRel.commitHash}) — {selectedRel.summary}
-                      </div>
-                      <ul style={{ margin: 0, paddingLeft: 18, color: "var(--ink-secondary)" }}>
-                        {selectedRel.changelog.map((item, idx) => (
-                          <li key={idx}>{item}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  );
-                })()}
-
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                  <button
-                    type="button"
-                    className="pri"
-                    disabled={updatingSoftware}
-                    onClick={handleInstallSelectedRelease}
-                  >
-                    <RefreshCw size={14} />
-                    <span>
-                      {updatingSoftware
-                        ? "Upgrading…"
-                        : compareSoftwareVersions(selectedTargetVersion, registry.systemConfig.systemVersion) <= 0
-                        ? `Upgrade to Next Build (v${nextUpgradeTarget})`
-                        : `Upgrade to Release v${selectedTargetVersion}`}
-                    </span>
-                  </button>
-                  <button type="button" disabled={updatingSoftware} onClick={handleGitPullUpdate}>
-                    <RefreshCw size={14} />
-                    <span>Sync Hosted / Repo (`git pull origin {gitBranchInput || "main"}`)</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* RIGHT: LIVE UPDATE CONSOLE, OFFLINE PATCH UPLOAD & CLI COMMAND */}
-            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                <div style={{ fontWeight: 600 }}>2. Update Console Log &amp; Offline Patch Installer</div>
-                <button
-                  type="button"
-                  style={{ minHeight: 26, padding: "2px 8px", fontSize: 11.5 }}
-                  onClick={() => {
-                    const cmd = `git pull origin ${gitBranchInput || "main"} && npm install && npm run build`;
-                    navigator.clipboard?.writeText(cmd);
-                    setCopiedCli(true);
-                    setTimeout(() => setCopiedCli(false), 2000);
-                  }}
-                >
-                  {copiedCli ? <Check size={12} /> : <Copy size={12} />}
-                  <span>{copiedCli ? "Copied CLI" : "Copy git pull CLI"}</span>
-                </button>
-              </div>
-
-              <div
-                className="mono"
-                style={{
-                  background: "#090d16",
-                  color: "#e2e8f0",
-                  borderRadius: 6,
-                  padding: "10px 12px",
-                  fontSize: 11.5,
-                  lineHeight: 1.55,
-                  maxHeight: 155,
-                  overflowY: "auto",
-                  border: "1px solid var(--line)",
-                  marginBottom: 12,
-                }}
-              >
-                {updateConsoleLines.map((line, idx) => (
-                  <div key={idx}>{line}</div>
-                ))}
-              </div>
-
-              <div className="field-group" style={{ marginBottom: 10 }}>
-                <label>Local Repository Update Command (`README.md`)</label>
-                <div className="mono" style={{ fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--line)", background: "var(--surface-solid)" }}>
-                  git pull origin {gitBranchInput || "main"}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <span className="meta-inline">Signed JSON OTA Upgrade Packages (Hosted &amp; Air-Gapped):</span>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    style={{ minHeight: 30, padding: "4px 10px", fontSize: 12 }}
-                    onClick={() => {
-                      exportSignedSoftwarePatchJson({
-                        actorName: meName,
-                        targetVersion: selectedTargetVersion,
-                        channel: releaseChannelInput,
-                        summary: customUpdateSummary.trim() || undefined,
-                      });
-                      setMsg({
-                        ok: true,
-                        text: `Exported signed upgrade package tfsecure-upgrade-v${selectedTargetVersion}.json.`,
-                      });
-                    }}
-                  >
-                    <Download size={13} />
-                    <span>Export Patch (.json)</span>
-                  </button>
-                  <label
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      padding: "5px 12px",
-                      borderRadius: 6,
-                      border: "1px solid var(--line-strong)",
-                      background: "var(--surface-solid)",
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Upload size={13} />
-                    <span>Upload Software Patch (.json)</span>
-                    <input
-                      type="file"
-                      accept=".json,application/json"
-                      style={{ display: "none" }}
-                      onChange={e => handleUploadPatchPackage(e.target.files?.[0], e.currentTarget)}
-                    />
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* INSTALLED UPDATE HISTORY & ROLLBACK TABLE */}
-          <div style={{ paddingTop: 12, borderTop: "1px solid var(--line)" }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>
-              Installed Software Update History &amp; Version Rollback
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Version</th>
-                    <th>Previous</th>
-                    <th>Source</th>
-                    <th>Commit</th>
-                    <th>Channel</th>
-                    <th>Summary</th>
-                    <th>Updated By</th>
-                    <th>Time</th>
-                    <th style={{ textAlign: "right" }}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(registry.systemConfig.updateHistory ?? []).map(rec => {
-                    const isCurrent = rec.version === registry.systemConfig.systemVersion;
-                    return (
-                      <tr key={rec.id}>
-                        <td className="mono" style={{ fontWeight: 700 }}>
-                          v{rec.version}
-                        </td>
-                        <td className="mono">v{rec.previousVersion}</td>
-                        <td className="mono" style={{ fontSize: 12 }}>{rec.source}</td>
-                        <td className="mono">{rec.commitHash}</td>
-                        <td>{rec.channel}</td>
-                        <td>{rec.summary}</td>
-                        <td>{rec.updatedBy}</td>
-                        <td className="mono" style={{ fontSize: 12 }}>{fmt(rec.updatedAt)}</td>
-                        <td style={{ textAlign: "right" }}>
-                          {isCurrent ? (
-                            <span className="mono status-ok" style={{ fontSize: 11.5 }}>Active Release</span>
-                          ) : (
-                            <button
-                              type="button"
-                              style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
-                              onClick={() => handleRollbackVersion(rec.version)}
-                            >
-                              <RefreshCw size={12} />
-                              <span>Rollback to v{rec.version}</span>
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-      )}
-
       {section === "analytics" && (
         <section className="panel">
           <div className="panel-header">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Activity size={16} style={{ color: "var(--sig)" }} />
-              <h2 className="panel-title">Live Production Analytics &amp; System Updates</h2>
+              <h2 className="panel-title">Live Production Analytics &amp; Security Policies</h2>
             </div>
-            <span className="mono status-ok" style={{ fontSize: 12 }}>
-              v{registry.systemConfig.systemVersion} · {registry.systemConfig.releaseChannel}
-            </span>
           </div>
 
           <div className="kpi-strip" style={{ marginBottom: 18, gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
@@ -4201,62 +3682,43 @@ function Settings({
             </div>
           </div>
 
-          <div className="grid-equal-2col" style={{ gap: 16 }}>
-            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
-              <div style={{ fontWeight: 600, marginBottom: 10 }}>Security &amp; Production Policies</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div className="field-group">
-                  <label>Site Maximum Occupancy Alert Threshold</label>
-                  <input
-                    type="number"
-                    className="mono"
-                    min={10}
-                    max={5000}
-                    value={capacityInput}
-                    onChange={e => setCapacityInput(+e.target.value)}
-                  />
-                </div>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={requireApprovalInput}
-                    onChange={e => setRequireApprovalInput(e.target.checked)}
-                    style={{ width: 16, height: 16 }}
-                  />
-                  <span>Require System Admin approval before new accounts can log in</span>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={autoOverstayInput}
-                    onChange={e => setAutoOverstayInput(e.target.checked)}
-                    style={{ width: 16, height: 16 }}
-                  />
-                  <span>Automatically flag visitors who exceed their passcode expiration window</span>
-                </label>
+          <div className="panel" style={{ background: "var(--surface-subtle)", maxWidth: 640 }}>
+            <div style={{ fontWeight: 600, marginBottom: 10 }}>Security &amp; Production Policies</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="field-group">
+                <label>Site Maximum Occupancy Alert Threshold</label>
+                <input
+                  type="number"
+                  className="mono"
+                  min={10}
+                  max={5000}
+                  value={capacityInput}
+                  onChange={e => setCapacityInput(+e.target.value)}
+                />
               </div>
-            </div>
-
-            <div className="panel" style={{ background: "var(--surface-subtle)" }}>
-              <div style={{ fontWeight: 600, marginBottom: 10 }}>System Update &amp; Runtime Channel</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div className="field-group">
-                  <label>Release Channel</label>
-                  <select value={releaseChannelInput} onChange={e => setReleaseChannelInput(e.target.value as any)}>
-                    <option value="Production">Production (Stable)</option>
-                    <option value="Enterprise LTS">Enterprise LTS (Hardened)</option>
-                    <option value="Staging">Staging (Preview)</option>
-                  </select>
-                </div>
-                <div className="meta-inline">
-                  Last Verified Update: {fmt(registry.systemConfig.lastUpdatedAt)}
-                </div>
-                <div>
-                  <button type="button" className="pri" onClick={handleSavePoliciesAndUpdate}>
-                    <RefreshCw size={14} />
-                    <span>Save Policies &amp; Apply System Update</span>
-                  </button>
-                </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={requireApprovalInput}
+                  onChange={e => setRequireApprovalInput(e.target.checked)}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span>Require System Admin approval before new accounts can log in</span>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={autoOverstayInput}
+                  onChange={e => setAutoOverstayInput(e.target.checked)}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span>Automatically flag visitors who exceed their passcode expiration window</span>
+              </label>
+              <div style={{ marginTop: 4 }}>
+                <button type="button" className="pri" onClick={handleSavePolicies}>
+                  <Check size={14} />
+                  <span>Save Security Policies</span>
+                </button>
               </div>
             </div>
           </div>
@@ -4352,39 +3814,92 @@ function Bell() {
   const [open, setOpen] = useState(false);
 
   const soundMuted = isNotificationSoundMuted();
+  const effectiveRole = me ? getEffectiveRole(me) : "staff";
 
   const items = useMemo(() => {
+    if (!me) return [];
     const srv = serverItems ?? [];
     const localRelevant = registry.localNotifications.filter(n => {
-      if (!me) return false;
-      if (me.role === "admin" || me.role === "security") return true;
-      return n.targetUserId === me.userId;
+      if (isVisitNotification(n)) {
+        return isNotificationForHostUser(n, me);
+      }
+      return effectiveRole === "admin" || effectiveRole === "security";
     });
-    return [...srv, ...localRelevant].sort((a, b) => b.at - a.at).slice(0, 60);
-  }, [serverItems, registry.localNotifications, me]);
+
+    // Deduplicate arrival notifications if both server and LAN registry emitted for the same arrival
+    const combined = [...localRelevant, ...srv].sort((a, b) => b.at - a.at);
+    const deduped: typeof combined = [];
+    for (const item of combined) {
+      if (item.kind === "arrival") {
+        const visitorPrefix = item.message.split("(")[0]?.trim().toLowerCase() ?? "";
+        const alreadyHasArrival = deduped.some(
+          existing =>
+            existing.kind === "arrival" &&
+            visitorPrefix &&
+            existing.message.toLowerCase().startsWith(visitorPrefix) &&
+            Math.abs(existing.at - item.at) < 60_000
+        );
+        if (alreadyHasArrival) continue;
+      }
+      deduped.push(item);
+    }
+    return deduped.slice(0, 60);
+  }, [serverItems, registry.localNotifications, me, effectiveRole]);
+
+  // Only visit notifications (check-in / arrival / check-out) addressed to the host of that visit
+  // should trigger the notification sound on the host's device.
+  const hostVisitNotifications = useMemo(() => {
+    if (!me) return [];
+    return items.filter(n => {
+      if (n.kind !== "arrival" && n.kind !== "checkin" && n.kind !== "checkout") {
+        return false;
+      }
+      // If this notification was triggered by the current user themselves at the gate, do not chime
+      if ("actorUserId" in n && n.actorUserId && n.actorUserId === me.userId) {
+        return false;
+      }
+      if ("targetUserId" in n || "targetHostName" in n) {
+        return isNotificationForHostUser(n as any, me);
+      }
+      // Server notifications in api.notifications.mine with kind === "arrival"|"checkout" are already scoped by userId === me.userId
+      return true;
+    });
+  }, [items, me]);
 
   const unread = items.filter(n => !n.read).length;
 
-  // Play soft, high, stretched ding-dong chime when new unread notifications arrive after initial load
-  const initializedRef = useRef(false);
-  const prevTopAtRef = useRef<number>(0);
-  const prevUnreadRef = useRef<number>(0);
+  const initializedUserRef = useRef<string | null>(null);
+  const seenHostVisitKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (serverItems === undefined) return;
-    const latestAt = items[0]?.at ?? 0;
-    if (!initializedRef.current) {
-      initializedRef.current = true;
-      prevTopAtRef.current = latestAt;
-      prevUnreadRef.current = unread;
+    if (!me || serverItems === undefined) return;
+
+    if (initializedUserRef.current !== me.userId) {
+      initializedUserRef.current = me.userId;
+      const initialSet = new Set<string>();
+      for (const n of hostVisitNotifications) {
+        initialSet.add(`${n._id}_${n.at}`);
+      }
+      seenHostVisitKeysRef.current = initialSet;
       return;
     }
-    if ((latestAt > prevTopAtRef.current && unread > 0) || unread > prevUnreadRef.current) {
+
+    let hasNewUnreadForHost = false;
+    const now = Date.now();
+    for (const n of hostVisitNotifications) {
+      const key = `${n._id}_${n.at}`;
+      if (!seenHostVisitKeysRef.current.has(key)) {
+        seenHostVisitKeysRef.current.add(key);
+        if (!n.read && now - n.at < 120_000) {
+          hasNewUnreadForHost = true;
+        }
+      }
+    }
+
+    if (hasNewUnreadForHost && !wasGateActionPerformedOnThisDeviceRecently()) {
       playNotificationDingDong();
     }
-    prevTopAtRef.current = Math.max(prevTopAtRef.current, latestAt);
-    prevUnreadRef.current = unread;
-  }, [serverItems, items, unread]);
+  }, [me, serverItems, hostVisitNotifications]);
 
   return (
     <div className="bell-wrap">
@@ -4396,7 +3911,7 @@ function Bell() {
           setOpen(next);
           if (next && unread > 0) {
             markAll();
-            markAllLocalNotificationsRead();
+            markAllLocalNotificationsRead(me ? { ...me, role: effectiveRole } : null);
           }
         }}
       >
@@ -4493,7 +4008,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     }
   });
   const [settingsInitialSection, setSettingsInitialSection] = useState<
-    "theme" | "images" | "updates" | "setup" | "analytics" | "backup"
+    "theme" | "images" | "setup" | "analytics" | "backup"
   >("theme");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -4677,8 +4192,8 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
   const selectTab = (t: string) => {
     if (t.startsWith("Settings:")) {
-      const sub = t.split(":")[1] as "theme" | "images" | "updates" | "setup" | "analytics" | "backup";
-      setSettingsInitialSection(sub || "updates");
+      const sub = t.split(":")[1] as "theme" | "images" | "setup" | "analytics" | "backup";
+      setSettingsInitialSection(sub || "theme");
       setTab("Settings");
     } else {
       if (t === "Settings") {
