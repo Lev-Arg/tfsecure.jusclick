@@ -850,18 +850,11 @@ export function ensureFirstAccountAndInvites(profile: {
           changed = true;
         }
       }
-      // Only set default "admin" override if the user hasn't explicitly switched/overridden their role
-      if (!nextRoles[profile._id] && !nextRoles[cleanEmail]) {
+      // Primary Bootstrap Admin or Server Admin always retains "admin" role
+      if (nextRoles[profile._id] !== "admin" || nextRoles[cleanEmail] !== "admin") {
         nextRoles[profile._id] = "admin";
         nextRoles[cleanEmail] = "admin";
         changed = true;
-      } else {
-        const syncedRole = nextRoles[profile._id] ?? nextRoles[cleanEmail]!;
-        if (nextRoles[profile._id] !== syncedRole || nextRoles[cleanEmail] !== syncedRole) {
-          nextRoles[profile._id] = syncedRole;
-          nextRoles[cleanEmail] = syncedRole;
-          changed = true;
-        }
       }
       if (nextPending[cleanEmail]) {
         delete nextPending[cleanEmail];
@@ -969,7 +962,17 @@ export function getEffectiveRole(profile: {
   const cleanEmail = (profile.email ?? "").trim().toLowerCase();
   const pid = profile._id ?? "";
 
-  // 1. Explicit Admin role assignment (by profile._id or lowercase email) always takes priority
+  // 1. Primary Bootstrap System Admin or Server-verified Admin is always System Admin (cannot be self-demoted)
+  if (
+    profile.role === "admin" ||
+    (pid && state.bootstrapAdminProfileId === pid) ||
+    (cleanEmail && state.bootstrapAdminEmail === cleanEmail) ||
+    (cleanEmail && state.registeredProfiles[cleanEmail]?.source === "bootstrap")
+  ) {
+    return "admin";
+  }
+
+  // 2. Explicit Admin role assignment (by profile._id or lowercase email)
   if (pid && state.userRoleOverrides[pid]) {
     return state.userRoleOverrides[pid];
   }
@@ -977,24 +980,15 @@ export function getEffectiveRole(profile: {
     return state.userRoleOverrides[cleanEmail];
   }
 
-  // 2. Active Admin Invitation role
+  // 3. Active Admin Invitation role
   if (cleanEmail && state.invitedUsers[cleanEmail]) {
     return state.invitedUsers[cleanEmail].role;
   }
 
-  // 3. Registered profile record from invite or explicit signup
+  // 4. Registered profile record from invite or signup
   const reg = cleanEmail ? state.registeredProfiles[cleanEmail] : undefined;
   if (reg && (reg.source === "invite" || reg.source === "signup")) {
     return reg.role;
-  }
-
-  // 4. Primary Bootstrap System Admin or Server-verified Admin
-  if (
-    profile.role === "admin" ||
-    (pid && state.bootstrapAdminProfileId === pid) ||
-    (cleanEmail && state.bootstrapAdminEmail === cleanEmail)
-  ) {
-    return "admin";
   }
 
   // 5. Server-assigned Security Admin or Staff
@@ -1002,7 +996,7 @@ export function getEffectiveRole(profile: {
     return profile.role;
   }
 
-  // 6. Default unpromoted accounts to "staff" (prevents remote Convex default "report" from turning new signups into Department Heads)
+  // 6. Default unpromoted accounts to "staff"
   return "staff";
 }
 
@@ -2324,7 +2318,6 @@ export function getMergedAuditLedger(
 export function registerSignUpAccount(params: {
   email: string;
   name?: string;
-  role?: RoleType;
   inviteCode?: string;
   departmentId?: string;
 }) {
@@ -2440,9 +2433,9 @@ export function registerSignUpAccount(params: {
     return;
   }
 
-  // 3. Standard self-registration: uses explicitly requested role or defaults to "staff", and requires Admin approval if requireAdminApproval is enabled
+  // 3. Standard uninvited self-registration: ALWAYS defaults to "staff" (only System Admin can promote roles in Users tab)
   const pid = state.registeredProfiles[key]?._id ?? `signup_${key}`;
-  const assignedRole: RoleType = params.role ?? state.userRoleOverrides[key] ?? "staff";
+  const assignedRole: RoleType = state.userRoleOverrides[key] ?? "staff";
   const assignedDept =
     params.departmentId ?? state.userDepartmentOverrides[key] ?? state.localDepartments[0]?._id;
   const autoApproved = !state.systemConfig.requireAdminApproval || assignedRole === "admin";

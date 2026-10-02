@@ -226,9 +226,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [step, setStep] = useState<"signIn" | "signUp" | "forgot" | { verify: string } | { reset: string }>("signIn");
   const [emailInput, setEmailInput] = useState("");
   const [nameInput, setNameInput] = useState("");
-  const [signupRole, setSignupRole] = useState<RoleType>(() =>
-    registry.bootstrapAdminEmail ? "staff" : "admin"
-  );
   const [signupDeptId, setSignupDeptId] = useState<string>("");
   const [inviteCodeInput, setInviteCodeInput] = useState("");
   const [policyAccepted, setPolicyAccepted] = useState(true);
@@ -260,7 +257,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   useEffect(() => {
     if (matchedInvite) {
       if (!nameInput) setNameInput(matchedInvite.name);
-      setSignupRole(matchedInvite.role);
       if (matchedInvite.departmentId) setSignupDeptId(matchedInvite.departmentId);
     }
   }, [matchedInvite]);
@@ -310,7 +306,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         });
 
         const chosenDeptId = signupDeptId || matchedInvite?.departmentId || depts[0]?._id;
-        const chosenRole: RoleType = matchedInvite ? matchedInvite.role : signupRole;
 
         if (step === "signUp") {
           fd.set("name", rawName);
@@ -321,11 +316,10 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
 
         const r = await signIn("password", fd);
         if (step === "signUp") {
-          // Only register signup role/department AFTER Convex auth succeeds so failed attempts never corrupt existing accounts
+          // Only register signup account AFTER Convex auth succeeds; role is determined strictly by invite or defaults to "staff"
           registerSignUpAccount({
             email,
             name: rawName,
-            role: chosenRole,
             inviteCode: inviteCodeInput.trim() || matchedInvite?.inviteCode,
             departmentId: chosenDeptId,
           });
@@ -496,36 +490,26 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
               )}
 
               {step === "signUp" && (
-                <div className="grid-equal-2col" style={{ gap: 8 }}>
-                  <div className="field-group">
-                    <label htmlFor="auth-role">Assigned Role</label>
-                    <select
-                      id="auth-role"
-                      value={matchedInvite ? matchedInvite.role : signupRole}
-                      onChange={e => setSignupRole(e.target.value as RoleType)}
-                      disabled={Boolean(matchedInvite)}
-                    >
-                      <option value="admin">System Admin</option>
-                      <option value="security">Security Admin</option>
-                      <option value="report">Department Head</option>
-                      <option value="staff">Staff</option>
-                    </select>
-                  </div>
-                  <div className="field-group">
-                    <label htmlFor="auth-dept">Bound Department</label>
-                    <select
-                      id="auth-dept"
-                      value={signupDeptId || matchedInvite?.departmentId || depts[0]?._id || ""}
-                      onChange={e => setSignupDeptId(e.target.value)}
-                      disabled={Boolean(matchedInvite?.departmentId)}
-                    >
-                      {depts.map(d => (
-                        <option key={d._id} value={d._id}>
-                          {d.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                <div className="field-group">
+                  <label htmlFor="auth-dept">Department</label>
+                  <select
+                    id="auth-dept"
+                    value={signupDeptId || matchedInvite?.departmentId || depts[0]?._id || ""}
+                    onChange={e => setSignupDeptId(e.target.value)}
+                    disabled={Boolean(matchedInvite?.departmentId)}
+                  >
+                    {depts.map(d => (
+                      <option key={d._id} value={d._id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {step === "signUp" && matchedInvite && (
+                <div className="gate-banner granted" style={{ marginTop: 0, padding: "7px 10px", fontSize: 12 }}>
+                  Invitation matched: pre-assigned role <strong>{formatRoleLabel(matchedInvite.role)}</strong>
                 </div>
               )}
 
@@ -2823,6 +2807,7 @@ function Users({
                     <td>
                       <select
                         value={u.role}
+                        disabled={self || isBootstrapFirstAdmin}
                         onChange={e => handleRoleChange(u, e.target.value as RoleType)}
                       >
                         <option value="admin">System Admin</option>
@@ -4766,25 +4751,6 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             <div className="operator-name">{me.name}</div>
             <div className="operator-meta">
               {formatRoleLabel(effectiveRole)} · {boundDeptName}
-            </div>
-            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontSize: 10.5, color: "var(--mute)", fontWeight: 600 }}>
-                Active Role (RBAC)
-              </label>
-              <select
-                value={effectiveRole}
-                aria-label="Switch active role"
-                style={{ minHeight: 28, height: 28, fontSize: 11.5, padding: "2px 6px" }}
-                onChange={e => {
-                  const nextR = e.target.value as RoleType;
-                  setUserRoleOverride(me._id, nextR, me.name, me.email);
-                }}
-              >
-                <option value="admin">System Admin</option>
-                <option value="security">Security Admin</option>
-                <option value="report">Department Head</option>
-                <option value="staff">Staff</option>
-              </select>
             </div>
           </div>
 
