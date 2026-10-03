@@ -1257,14 +1257,11 @@ tbody tr:hover {
   display: block;
 }
 
-/* tflogo1.png has white foreground on transparent background; darken cleanly on light surfaces */
-[data-theme="light"] .tf-logo-exact-img:not(.tf-logo-force-light) {
-  filter: brightness(0.08);
-}
-
+/* Full-color transparent cutout PNG emblem renders cleanly in both light and dark themes */
+[data-theme="light"] .tf-logo-exact-img,
 [data-theme="dark"] .tf-logo-exact-img,
 .tf-logo-exact-img.tf-logo-force-light {
-  filter: none;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.22));
 }
 
 @media print {

@@ -133,6 +133,7 @@ export function TfLogo({
         <img
           src={logoSrc}
           alt="TF Commodities — System Logo"
+          referrerPolicy="no-referrer"
           className={`tf-logo-exact-img tf-logo-fill-img ${
             lightText || isCustomLogo ? "tf-logo-force-light" : ""
           }`}
@@ -151,6 +152,7 @@ export function TfLogo({
         <img
           src={logoSrc}
           alt="TFsecure System Icon"
+          referrerPolicy="no-referrer"
           className="tf-logo-exact-img tf-logo-force-light"
           style={{
             width: 24,
@@ -171,6 +173,7 @@ export function TfLogo({
       <img
         src={logoSrc}
         alt="TF Commodities — System Logo"
+        referrerPolicy="no-referrer"
         className={`tf-logo-exact-img ${lightText || isCustomLogo ? "tf-logo-force-light" : ""}`}
         style={{
           height,

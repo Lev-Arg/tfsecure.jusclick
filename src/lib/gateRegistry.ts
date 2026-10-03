@@ -593,6 +593,7 @@ export function isVisitNotification(n: { kind?: string; targetUserId?: string; t
     n.kind === "arrival" ||
     n.kind === "checkin" ||
     n.kind === "checkout" ||
+    n.kind === "departure" ||
     Boolean(n.targetUserId || n.targetHostName)
   );
 }
@@ -2700,6 +2701,16 @@ export function getMergedPasscodes(
     expiresAt: number;
     usedAt?: number;
     revokedAt?: number;
+    checkedInAt?: number;
+    checkedInBy?: string;
+    badgeNumber?: string;
+    idType?: string;
+    idNumber?: string;
+    vehiclePlate?: string;
+    notes?: string;
+    checkedOutAt?: number;
+    checkedOutBy?: string;
+    checkoutNotes?: string;
   }>
 ) {
   const byId = new Map<string, any>();
@@ -2707,20 +2718,31 @@ export function getMergedPasscodes(
   for (const srv of serverRows) {
     const revokedAt = srv.revokedAt ?? state.revokedPasscodeIds[srv._id];
     const usedAt = srv.usedAt ?? state.usedPasscodeTimestamps[srv._id];
+    const co = state.checkedOutPasscodeIds[srv._id];
+    const checkedOutAt = srv.checkedOutAt ?? co?.checkedOutAt;
+    const checkedOutBy = srv.checkedOutBy ?? co?.checkedOutBy;
+    const checkoutNotes = srv.checkoutNotes ?? co?.checkoutNotes;
     byId.set(String(srv._id), {
       ...srv,
       revokedAt,
       usedAt,
+      checkedOutAt,
+      checkedOutBy,
+      checkoutNotes,
     });
   }
 
   for (const loc of state.localPasscodes) {
     if (byId.has(loc._id)) continue;
     const { codeHash: _h, ...rest } = loc;
+    const co = state.checkedOutPasscodeIds[loc._id];
     byId.set(loc._id, {
       ...rest,
       revokedAt: loc.revokedAt ?? state.revokedPasscodeIds[loc._id],
       usedAt: loc.usedAt ?? state.usedPasscodeTimestamps[loc._id],
+      checkedOutAt: (loc as any).checkedOutAt ?? co?.checkedOutAt,
+      checkedOutBy: (loc as any).checkedOutBy ?? co?.checkedOutBy,
+      checkoutNotes: (loc as any).checkoutNotes ?? co?.checkoutNotes,
     });
   }
 
@@ -2776,7 +2798,8 @@ export function revokeLocalPasscode(
 
 export async function validateLocalPasscode(
   code: string,
-  actor: { userId: string; name: string; role: RoleType }
+  actor: { userId: string; name: string; role: RoleType },
+  options?: { claim?: boolean }
 ): Promise<{
   ok: boolean;
   result?: "granted" | "unknown" | "expired" | "already_used" | "revoked" | "locked";
@@ -2840,12 +2863,14 @@ export async function validateLocalPasscode(
   else if (isUsed) result = "already_used";
   else if (expiresAt < now) result = "expired";
 
+  const shouldClaim = options?.claim === true;
+
   const nextLocal =
-    result === "granted"
+    result === "granted" && shouldClaim
       ? state.localPasscodes.map(p => (p.codeHash === hash ? { ...p, usedAt: now } : p))
       : state.localPasscodes;
   const nextUsed =
-    result === "granted" && targetId
+    result === "granted" && targetId && shouldClaim
       ? { ...state.usedPasscodeTimestamps, [targetId]: now }
       : state.usedPasscodeTimestamps;
 
@@ -2859,13 +2884,13 @@ export async function validateLocalPasscode(
   };
 
   const nextNotifs = [...state.localNotifications];
-  if (result === "granted") {
+  if (result === "granted" && shouldClaim) {
     const notifId = `notif_arrival_${targetId ?? now}`;
     const existingIdx = nextNotifs.findIndex(n => n._id === notifId);
     const arrivalNotif: LocalNotificationEntry = {
       _id: notifId,
       kind: "arrival",
-      message: `${visitorName} (${localRow?.kind ?? attached?.kind ?? "visitor"}) has arrived at the gate`,
+      message: `${visitorName} (${localRow?.kind ?? attached?.kind ?? "visitor"}) has checked in at the gate`,
       at: now,
       read: false,
       targetUserId: issuedBy,
@@ -2897,6 +2922,13 @@ export async function validateLocalPasscode(
     visitor: result === "granted" ? visitorName : undefined,
     passcodeId: targetId,
   };
+}
+
+export async function inspectLocalPasscode(
+  code: string,
+  actor: { userId: string; name: string; role: RoleType }
+) {
+  return validateLocalPasscode(code, actor, { claim: false });
 }
 
 export function getAttachmentByHash(codeHash: string): GuestAttachment | undefined {

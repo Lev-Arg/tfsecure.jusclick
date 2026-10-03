@@ -1334,8 +1334,9 @@ function Passcodes({
 
   const getStatus = (p: (typeof rows)[number]) => {
     if (p.revokedAt || registry.deniedPasscodeIds[p._id]) return "Revoked";
-    if (p.usedAt) {
+    if (p.usedAt || (p as any).checkedInAt) {
       const isCheckedOut =
+        !!(p as any).checkedOutAt ||
         !!registry.checkedOutPasscodeIds[p._id] ||
         registry.onSiteRecords.some(r => r.passcodeId === p._id && !!r.checkedOutAt);
       return isCheckedOut ? "Checked Out" : "On Site";
@@ -1587,6 +1588,13 @@ function Passcodes({
   };
 
   const resolveCheckoutInfo = (p: (typeof rows)[number]) => {
+    if ((p as any).checkedOutAt) {
+      return {
+        checkedOutAt: (p as any).checkedOutAt,
+        checkedOutBy: (p as any).checkedOutBy ?? "Gate Security",
+        checkoutNotes: (p as any).checkoutNotes,
+      };
+    }
     const direct = registry.checkedOutPasscodeIds[p._id];
     if (direct) return direct;
     const rec = registry.onSiteRecords.find(r => r.passcodeId === p._id && !!r.checkedOutAt);
@@ -3402,6 +3410,27 @@ function Settings({
                     <Check size={12} />
                     <span>Set as System Logo &amp; Icon</span>
                   </button>
+                  <a
+                    href={DEFAULT_TF_LOGO}
+                    download="tf-commodities-security-division-logo.png"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      minHeight: 28,
+                      padding: "3px 10px",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      borderRadius: 6,
+                      border: "1px solid var(--line-strong)",
+                      background: "var(--surface-solid)",
+                      color: "var(--ink)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    <Download size={12} />
+                    <span>Download Cutout PNG</span>
+                  </a>
                   <button
                     type="button"
                     className="danger-btn"
@@ -3851,7 +3880,12 @@ function Bell() {
   const hostVisitNotifications = useMemo(() => {
     if (!me) return [];
     return items.filter(n => {
-      if (n.kind !== "arrival" && n.kind !== "checkin" && n.kind !== "checkout") {
+      if (
+        n.kind !== "arrival" &&
+        n.kind !== "checkin" &&
+        n.kind !== "checkout" &&
+        n.kind !== "departure"
+      ) {
         return false;
       }
       // If this notification was triggered by the current user themselves at the gate, do not chime

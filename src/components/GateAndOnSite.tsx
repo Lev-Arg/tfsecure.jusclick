@@ -26,6 +26,7 @@ import {
   getMergedPasscodes,
   getMergedUserDirectory,
   getNextAvailableBadge,
+  inspectLocalPasscode,
   isProfileApproved,
   markGateOperatorActionOnThisDevice,
   recordGateDenial,
@@ -141,6 +142,11 @@ export function useUnifiedOnSiteList() {
       const resolvedDeptId = r.hostDepartmentId || linkedPasscode?.hostDepartmentId || attached?.hostDepartmentId;
       const resolvedDeptName = r.deptName || (resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General");
 
+      const co = r.passcodeId ? registry.checkedOutPasscodeIds[r.passcodeId] : undefined;
+      const resolvedCheckedOutAt = r.checkedOutAt ?? (linkedPasscode as any)?.checkedOutAt ?? co?.checkedOutAt;
+      const resolvedCheckedOutBy = r.checkedOutBy ?? (linkedPasscode as any)?.checkedOutBy ?? co?.checkedOutBy;
+      const resolvedCheckoutNotes = r.checkoutNotes ?? (linkedPasscode as any)?.checkoutNotes ?? co?.checkoutNotes;
+
       map.set(k, {
         key: k,
         recordId: r.id,
@@ -161,21 +167,34 @@ export function useUnifiedOnSiteList() {
         checkedInAt: r.checkedInAt,
         checkedInBy: r.checkedInBy,
         expiresAt: r.expiresAt ?? linkedPasscode?.expiresAt ?? attached?.expiresAt,
-        checkedOutAt: r.checkedOutAt,
-        checkedOutBy: r.checkedOutBy,
-        checkoutNotes: r.checkoutNotes,
+        checkedOutAt: resolvedCheckedOutAt,
+        checkedOutBy: resolvedCheckedOutBy,
+        checkoutNotes: resolvedCheckoutNotes,
       });
     }
 
     for (const p of passcodes) {
-      if (!p.usedAt || p.revokedAt) continue;
+      if ((!p.usedAt && !(p as any).checkedInAt) || p.revokedAt) continue;
       if (registry.deniedPasscodeIds[p._id]) continue;
-      if (map.has(p._id)) continue;
+      const co = registry.checkedOutPasscodeIds[p._id];
+      const resolvedCheckedOutAt = (p as any).checkedOutAt ?? co?.checkedOutAt;
+      const resolvedCheckedOutBy = (p as any).checkedOutBy ?? co?.checkedOutBy;
+      const resolvedCheckoutNotes = (p as any).checkoutNotes ?? co?.checkoutNotes;
+
+      if (map.has(p._id)) {
+        const existing = map.get(p._id)!;
+        if (!existing.checkedOutAt && resolvedCheckedOutAt) {
+          existing.checkedOutAt = resolvedCheckedOutAt;
+          existing.checkedOutBy = resolvedCheckedOutBy ?? existing.checkedOutBy;
+          existing.checkoutNotes = resolvedCheckoutNotes ?? existing.checkoutNotes;
+        }
+        continue;
+      }
+
       const attached = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
       if (attached?.codeHash && registry.deniedCodeHashes[attached.codeHash]) continue;
 
       const issuer = userByUserId.get(p.issuedBy);
-      const co = registry.checkedOutPasscodeIds[p._id];
       const resolvedHostName = (p as any).hostName || attached?.hostName || issuer?.name || "Staff Host";
       const resolvedDeptId = p.hostDepartmentId || issuer?.departmentId || attached?.hostDepartmentId;
       map.set(p._id, {
@@ -188,18 +207,18 @@ export function useUnifiedOnSiteList() {
         kind: p.kind,
         hostName: resolvedHostName,
         deptName: resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General",
-        badgeNumber: "GATE-PASS",
-        idType: "Passcode",
+        badgeNumber: (p as any).badgeNumber || "GATE-PASS",
+        idType: (p as any).idType || "Passcode",
         idNumber: attached?.idNumber,
         phone: attached?.phone,
-        vehiclePlate: attached?.vehiclePlate,
+        vehiclePlate: (p as any).vehiclePlate || attached?.vehiclePlate,
         purpose: attached?.purpose,
-        checkedInAt: p.usedAt,
-        checkedInBy: "Gate Security",
+        checkedInAt: (p as any).checkedInAt ?? p.usedAt,
+        checkedInBy: (p as any).checkedInBy ?? "Gate Security",
         expiresAt: p.expiresAt,
-        checkedOutAt: co?.checkedOutAt,
-        checkedOutBy: co?.checkedOutBy,
-        checkoutNotes: co?.checkoutNotes,
+        checkedOutAt: resolvedCheckedOutAt,
+        checkedOutBy: resolvedCheckedOutBy,
+        checkoutNotes: resolvedCheckoutNotes,
       });
     }
 
@@ -249,7 +268,9 @@ type PendingCandidate = {
 };
 
 export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string; onNavigateOnSite: () => void }) {
-  const validate = useMutation(api.passcodes.validate);
+  const inspectPasscode = useMutation(api.passcodes.inspect);
+  const checkInMutation = useMutation(api.passcodes.checkIn);
+  const checkOutMutation = useMutation(api.passcodes.checkOut);
   const revoke = useMutation(api.passcodes.revoke);
   const remotePasscodes = useQuery(api.passcodes.list) ?? [];
   const remoteDepts = useQuery(api.departments.list) ?? [];
@@ -433,9 +454,14 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         role: effectiveRole,
       };
       markGateOperatorActionOnThisDevice();
-      let r: any = await validate({ code: clean });
-      if (!r.ok) {
-        const localCheck = await validateLocalPasscode(clean, gateActor);
+      let r: any = null;
+      try {
+        r = await inspectPasscode({ code: clean });
+      } catch {
+        // server fallback
+      }
+      if (!r || !r.ok) {
+        const localCheck = await inspectLocalPasscode(clean, gateActor);
         if (!localCheck.ok || !localCheck.result) {
           setBanner({ type: "denied", title: "ERROR", text: localCheck.error ?? "Validation error", at: now });
           return;
@@ -454,14 +480,18 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         return;
       }
 
-      const visitorName = r.visitor ?? "Guest";
-      const row = passcodes.find(
-        p =>
-          p.visitorName.trim().toLowerCase() === visitorName.trim().toLowerCase() &&
-          !p.revokedAt &&
-          (!p.usedAt || Math.abs(p.usedAt - now) < 60_000)
-      );
-      const byName = getAttachmentByPasscodeId(row?._id) ?? getAttachmentByName(visitorName, row?.expiresAt);
+      const serverPc = r.passcode;
+      const visitorName = serverPc?.visitorName ?? r.visitor ?? "Guest";
+      const row = serverPc
+        ? passcodes.find(p => String(p._id) === String(serverPc._id))
+        : passcodes.find(
+            p =>
+              p.visitorName.trim().toLowerCase() === visitorName.trim().toLowerCase() &&
+              !p.revokedAt &&
+              (!p.usedAt || Math.abs(p.usedAt - now) < 60_000)
+          );
+      const targetPasscodeId = serverPc?._id ?? row?._id;
+      const byName = getAttachmentByPasscodeId(targetPasscodeId) ?? getAttachmentByName(visitorName, serverPc?.expiresAt ?? row?.expiresAt);
       const nextBadge = getNextAvailableBadge(activeOnSite.map(p => p.badgeNumber));
       setBadgeInput(nextBadge);
       setIdNumberInput(byName?.idNumber ?? "");
@@ -473,23 +503,26 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
         code: clean,
         codeHash: hash,
         alreadyValidatedOnServer: true,
-        passcodeId: row?._id,
-        issuedByUserId: row?.issuedBy ?? byName?.issuedByUserId,
-        visitorName,
-        company: row?.company ?? byName?.company,
-        kind: row?.kind ?? byName?.kind ?? "visitor",
+        passcodeId: targetPasscodeId,
+        issuedByUserId: serverPc?.issuedBy ?? row?.issuedBy ?? byName?.issuedByUserId,
+        visitorName: serverPc?.visitorName ?? visitorName,
+        company: serverPc?.company ?? row?.company ?? byName?.company,
+        kind: serverPc?.kind ?? row?.kind ?? byName?.kind ?? "visitor",
         hostName:
+          serverPc?.hostName ??
           (row as any)?.hostName ??
           byName?.hostName ??
-          hostNameForIssuer(row?.issuedBy) ??
+          hostNameForIssuer(serverPc?.issuedBy ?? row?.issuedBy) ??
           operatorName,
-        hostDepartmentId: row?.hostDepartmentId ?? byName?.hostDepartmentId,
-        deptName: row?.hostDepartmentId ? deptName(row.hostDepartmentId) : byName?.deptName ?? "General",
+        hostDepartmentId: serverPc?.hostDepartmentId ?? row?.hostDepartmentId ?? byName?.hostDepartmentId,
+        deptName: (serverPc?.hostDepartmentId ?? row?.hostDepartmentId)
+          ? deptName(serverPc?.hostDepartmentId ?? row!.hostDepartmentId)
+          : byName?.deptName ?? "General",
         phone: byName?.phone,
         idNumber: byName?.idNumber,
         vehiclePlate: byName?.vehiclePlate,
         purpose: byName?.purpose,
-        expiresAt: row?.expiresAt ?? byName?.expiresAt,
+        expiresAt: serverPc?.expiresAt ?? row?.expiresAt ?? byName?.expiresAt,
       });
     } finally {
       setBusy(false);
@@ -556,43 +589,31 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
     setBusy(true);
     try {
       markGateOperatorActionOnThisDevice();
-      if (!pendingGuest.alreadyValidatedOnServer) {
+      const checkInTime = Date.now();
+      const isConvexId = pendingGuest.passcodeId && !String(pendingGuest.passcodeId).startsWith("pc_");
+
+      if (isConvexId) {
+        try {
+          await checkInMutation({
+            passcodeId: pendingGuest.passcodeId as any,
+            badgeNumber: normalizedBadge,
+            idType: idTypeInput,
+            idNumber: sanitizeText(idNumberInput, 40) || pendingGuest.idNumber,
+            vehiclePlate: sanitizeText(vehicleInput, 24).toUpperCase() || pendingGuest.vehiclePlate,
+            guardNotes: sanitizeText(guardNotes, 160) || undefined,
+          });
+        } catch (serverErr) {
+          console.warn("Convex checkIn mutation error (will proceed with local fallback):", serverErr);
+        }
+      } else {
         const gateActor = {
           userId: me?.userId ?? operatorName,
           name: operatorName,
           role: effectiveRole,
         };
-        if (pendingGuest.passcodeId?.startsWith("pc_")) {
-          const localRes = await validateLocalPasscode(pendingGuest.code, gateActor);
-          if (!localRes.ok || localRes.result !== "granted") {
-            setBanner({
-              type: "denied",
-              title: "FAILED",
-              text: !localRes.ok ? (localRes.error ?? "Failed") : ERROR_MESSAGES[localRes.result ?? "unknown"] ?? String(localRes.result),
-              at: Date.now(),
-            });
-            setPendingGuest(null);
-            return;
-          }
-        } else {
-          const r = await validate({ code: pendingGuest.code });
-          if (!r.ok || r.result !== "granted") {
-            const localRes = await validateLocalPasscode(pendingGuest.code, gateActor);
-            if (!localRes.ok || localRes.result !== "granted") {
-              setBanner({
-                type: "denied",
-                title: "FAILED",
-                text: !r.ok ? r.error : ERROR_MESSAGES[r.result] ?? r.result,
-                at: Date.now(),
-              });
-              setPendingGuest(null);
-              return;
-            }
-          }
-        }
+        await validateLocalPasscode(pendingGuest.code, gateActor, { claim: true });
       }
 
-      const checkInTime = Date.now();
       recordGuestCheckIn({
         passcodeId: pendingGuest.passcodeId,
         codeHash: pendingGuest.codeHash,
@@ -946,13 +967,26 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                             type="button"
                             className="pri"
                             style={{ minHeight: 28, padding: "2px 8px", fontSize: 12 }}
-                            onClick={() => {
+                            onClick={async () => {
                               if (!verifyCsrfToken(getCsrfToken())) return;
+                              const cleanNotes = checkoutNote.trim() || "Checked out";
+                              const isConvexId = person.passcodeId && !String(person.passcodeId).startsWith("pc_");
+                              if (isConvexId) {
+                                try {
+                                  await checkOutMutation({
+                                    passcodeId: person.passcodeId as any,
+                                    checkoutNotes: cleanNotes,
+                                  });
+                                } catch (err) {
+                                  console.warn("Convex checkOut mutation error:", err);
+                                }
+                              }
                               recordGuestCheckOut({
                                 recordId: person.recordId,
                                 passcodeId: person.passcodeId,
                                 checkedOutBy: operatorName,
-                                checkoutNotes: checkoutNote.trim() || "Checked out",
+                                checkedOutByUserId: me?.userId,
+                                checkoutNotes: cleanNotes,
                                 fallbackVisitor: {
                                   visitorName: person.visitorName,
                                   company: person.company,
@@ -1020,6 +1054,8 @@ export function PersonsOnSite({
   canManage: boolean;
   canExport: boolean;
 }) {
+  const checkOutMutation = useMutation(api.passcodes.checkOut);
+  const me = useQuery(api.users.me);
   const { activeOnSite, checkedOutHistory, all } = useUnifiedOnSiteList();
   const [view, setView] = useState<"active" | "departed" | "all">("active");
   const [search, setSearch] = useState("");
@@ -1244,13 +1280,26 @@ export function PersonsOnSite({
                               type="button"
                               className="pri"
                               style={{ minHeight: 28, padding: "2px 10px", fontSize: 12 }}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (!verifyCsrfToken(getCsrfToken())) return;
+                                const cleanRemarks = exitRemarks.trim() || "Checked out";
+                                const isConvexId = person.passcodeId && !String(person.passcodeId).startsWith("pc_");
+                                if (isConvexId) {
+                                  try {
+                                    await checkOutMutation({
+                                      passcodeId: person.passcodeId as any,
+                                      checkoutNotes: cleanRemarks,
+                                    });
+                                  } catch (err) {
+                                    console.warn("Convex checkOut mutation error:", err);
+                                  }
+                                }
                                 recordGuestCheckOut({
                                   recordId: person.recordId,
                                   passcodeId: person.passcodeId,
                                   checkedOutBy: operatorName,
-                                  checkoutNotes: exitRemarks.trim() || "Checked out",
+                                  checkedOutByUserId: me?.userId,
+                                  checkoutNotes: cleanRemarks,
                                   fallbackVisitor: {
                                     visitorName: person.visitorName,
                                     company: person.company,

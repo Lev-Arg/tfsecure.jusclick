@@ -73,6 +73,176 @@ export const issue = mutation({
   },
 });
 
+export const inspect = mutation({
+  args: { code: v.string() },
+  handler: async (ctx, a) => {
+    const me = await authorize(ctx, "passcode.validate", "gate check");
+    if (!me) return { ok: false as const, error: "Your role cannot inspect passcodes" };
+
+    const cleanCode = a.code.trim();
+    if (!/^\d{6}$/.test(cleanCode)) {
+      return { ok: false as const, error: "Passcode must be a 6-digit number" };
+    }
+
+    const now = Date.now();
+    const recent = await ctx.db
+      .query("failures")
+      .withIndex("by_at", q => q.gt("at", now - LOCK_WINDOW))
+      .take(LOCK_LIMIT + 1);
+    if (recent.length >= LOCK_LIMIT) {
+      await writeAudit(ctx, me, "gate.check", false, "locked out");
+      return { ok: true as const, result: "locked" };
+    }
+
+    const hash = await sha256(cleanCode);
+    const p = await ctx.db.query("passcodes").withIndex("by_hash", q => q.eq("codeHash", hash)).first();
+    let result = "granted";
+    if (!p) result = "unknown";
+    else if (p.revokedAt) result = "revoked";
+    else if (p.checkedOutAt) result = "already_checked_out";
+    else if (p.usedAt || p.checkedInAt) result = "already_used";
+    else if (p.expiresAt < now) result = "expired";
+
+    if (result === "unknown") {
+      await ctx.db.insert("failures", { at: now });
+      if (recent.length + 1 === LOCK_LIMIT) {
+        await notifyRoles(
+          ctx,
+          ["admin", "security"],
+          "security",
+          `Gate locked for 10 minutes after ${LOCK_LIMIT} unknown passcodes`
+        );
+      }
+    }
+
+    // Notice: inspecting code does NOT mark usedAt and does NOT send arrival notification to host.
+    // The arrival notification is triggered only when check-in is actually completed.
+    return {
+      ok: true as const,
+      result,
+      passcode: p && result === "granted" ? {
+        _id: p._id,
+        visitorName: p.visitorName,
+        kind: p.kind,
+        company: p.company,
+        hostName: p.hostName,
+        hostDepartmentId: p.hostDepartmentId,
+        issuedBy: p.issuedBy,
+        expiresAt: p.expiresAt,
+      } : undefined,
+      visitor: result === "granted" ? p!.visitorName : undefined,
+    };
+  },
+});
+
+export const checkIn = mutation({
+  args: {
+    code: v.optional(v.string()),
+    passcodeId: v.optional(v.id("passcodes")),
+    badgeNumber: v.string(),
+    idType: v.optional(v.string()),
+    idNumber: v.optional(v.string()),
+    vehiclePlate: v.optional(v.string()),
+    guardNotes: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    const me = await authorize(ctx, "passcode.validate", "gate check-in");
+    if (!me) return { ok: false as const, error: "Your role cannot check in visitors" };
+
+    let p: any = null;
+    if (a.passcodeId) {
+      p = await ctx.db.get(a.passcodeId);
+    } else if (a.code) {
+      const hash = await sha256(a.code.trim());
+      p = await ctx.db.query("passcodes").withIndex("by_hash", q => q.eq("codeHash", hash)).first();
+    }
+
+    if (!p) return { ok: false as const, error: "Passcode record not found" };
+    if (p.revokedAt) return { ok: false as const, error: "Passcode has been revoked" };
+    if (p.checkedOutAt) return { ok: false as const, error: "Passcode was already checked out" };
+    if (p.usedAt || p.checkedInAt) return { ok: false as const, error: "Passcode was already checked in" };
+    const now = Date.now();
+    if (p.expiresAt < now) return { ok: false as const, error: "Passcode has expired" };
+
+    const cleanBadge = a.badgeNumber.trim().toUpperCase() || "TFC-GATE";
+
+    await ctx.db.patch(p._id, {
+      usedAt: now,
+      checkedInAt: now,
+      checkedInBy: me.name,
+      badgeNumber: cleanBadge,
+      idType: a.idType || "Verified at Gate",
+      idNumber: a.idNumber,
+      vehiclePlate: a.vehiclePlate,
+      notes: a.guardNotes,
+    });
+
+    await ctx.db.insert("gateEvents", { passcodeId: p._id, guardId: me.userId, result: "granted", at: now });
+    await writeAudit(
+      ctx,
+      me,
+      "gate.checkin",
+      true,
+      `Checked in: ${p.visitorName} (${p.kind}, badge: ${cleanBadge}, host: ${p.hostName ?? "Staff"})`
+    );
+
+    // NOTIFY THE HOST THAT GUEST HAS CHECKED IN!
+    await notifyUser(
+      ctx,
+      p.issuedBy,
+      "arrival",
+      `${p.visitorName} (${p.kind}) has checked in at the gate (Badge: ${cleanBadge})`
+    );
+
+    return {
+      ok: true as const,
+      passcodeId: p._id,
+      visitorName: p.visitorName,
+    };
+  },
+});
+
+export const checkOut = mutation({
+  args: {
+    passcodeId: v.id("passcodes"),
+    checkoutNotes: v.optional(v.string()),
+  },
+  handler: async (ctx, a) => {
+    const me = await authorize(ctx, "passcode.validate", "gate checkout");
+    if (!me) return { ok: false as const, error: "Your role cannot check out visitors" };
+
+    const p = await ctx.db.get(a.passcodeId);
+    if (!p) return { ok: false as const, error: "Passcode record not found" };
+
+    const now = Date.now();
+    const cleanNotes = a.checkoutNotes?.trim() || "Checked out";
+
+    await ctx.db.patch(a.passcodeId, {
+      checkedOutAt: now,
+      checkedOutBy: me.name,
+      checkoutNotes: cleanNotes,
+    });
+
+    await writeAudit(
+      ctx,
+      me,
+      "gate.checkout",
+      true,
+      `Checked out: ${p.visitorName} (${p.kind}) by ${me.name}`
+    );
+
+    // NOTIFY THE HOST THAT GUEST HAS CHECKED OUT!
+    await notifyUser(
+      ctx,
+      p.issuedBy,
+      "checkout",
+      `${p.visitorName} (${p.kind}) has checked out and departed the facility.`
+    );
+
+    return { ok: true as const };
+  },
+});
+
 export const validate = mutation({
   args: { code: v.string() },
   handler: async (ctx, a) => {
@@ -99,7 +269,8 @@ export const validate = mutation({
     let result = "granted";
     if (!p) result = "unknown";
     else if (p.revokedAt) result = "revoked";
-    else if (p.usedAt) result = "already_used";
+    else if (p.checkedOutAt) result = "already_checked_out";
+    else if (p.usedAt || p.checkedInAt) result = "already_used";
     else if (p.expiresAt < now) result = "expired";
 
     if (result === "unknown") {
@@ -114,11 +285,6 @@ export const validate = mutation({
       }
     }
 
-    if (p && result === "granted") {
-      await ctx.db.patch(p._id, { usedAt: now });
-      await notifyUser(ctx, p.issuedBy, "arrival", `${p.visitorName} (${p.kind}) has arrived at the gate`);
-    }
-
     await ctx.db.insert("gateEvents", { passcodeId: p?._id, guardId: me.userId, result, at: now });
     await writeAudit(
       ctx,
@@ -127,9 +293,23 @@ export const validate = mutation({
       result === "granted",
       p ? `${result}: ${p.visitorName} (host: ${p.hostName ?? "Staff"})` : result
     );
+
+    // Inspecting/verifying a passcode at the gate:
+    // DOES NOT mark usedAt or checkedInAt and DOES NOT send arrival notification to host.
+    // The arrival notification is triggered only when check-in is actually completed.
     return {
       ok: true as const,
       result,
+      passcode: p && result === "granted" ? {
+        _id: p._id,
+        visitorName: p.visitorName,
+        kind: p.kind,
+        company: p.company,
+        hostName: p.hostName,
+        hostDepartmentId: p.hostDepartmentId,
+        issuedBy: p.issuedBy,
+        expiresAt: p.expiresAt,
+      } : undefined,
       visitor: result === "granted" ? p!.visitorName : undefined,
     };
   },
