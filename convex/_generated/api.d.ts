@@ -11,12 +11,15 @@
 import type * as ResendOTP from "../ResendOTP.js";
 import type * as audit from "../audit.js";
 import type * as auth from "../auth.js";
+import type * as authWrapper from "../authWrapper.js";
+import type * as csrf from "../csrf.js";
 import type * as departments from "../departments.js";
 import type * as http from "../http.js";
 import type * as lib from "../lib.js";
 import type * as metrics from "../metrics.js";
 import type * as notifications from "../notifications.js";
 import type * as passcodes from "../passcodes.js";
+import type * as security from "../security.js";
 import type * as settings from "../settings.js";
 import type * as users from "../users.js";
 
@@ -30,12 +33,15 @@ declare const fullApi: ApiFromModules<{
   ResendOTP: typeof ResendOTP;
   audit: typeof audit;
   auth: typeof auth;
+  authWrapper: typeof authWrapper;
+  csrf: typeof csrf;
   departments: typeof departments;
   http: typeof http;
   lib: typeof lib;
   metrics: typeof metrics;
   notifications: typeof notifications;
   passcodes: typeof passcodes;
+  security: typeof security;
   settings: typeof settings;
   users: typeof users;
 }>;

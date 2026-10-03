@@ -210,7 +210,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const remoteDepts = useQuery(api.departments.list) ?? [];
   const registry = useGateRegistry();
   const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
+    () => getMergedDepartments(remoteDepts),
     [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
   );
 
@@ -225,6 +225,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  const preAuthCheck = useMutation(api.authWrapper.preAuthCheck);
 
   useEffect(() => {
     applySafeAccent(brand?.accent, theme);
@@ -274,8 +275,9 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       setErr("Enter your full name (at least 2 characters).");
       return;
     }
-    if ((step === "signIn" || step === "signUp") && password.length < 8) {
-      setErr("Password must be at least 8 characters.");
+    // Basic password length check for UX (server enforces full complexity)
+    if ((step === "signIn" || step === "signUp") && password.length < 12) {
+      setErr("Password must be at least 12 characters.");
       return;
     }
 
@@ -288,6 +290,27 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
 
     setBusy(true);
     try {
+      // Server-side rate limiting and password validation check
+      let authAction: "signIn" | "signUp" | "passwordReset";
+      if (step === "signIn" || step === "signUp") {
+        authAction = step;
+      } else if (step === "forgot" || typeof step === "object" && "reset" in step) {
+        authAction = "passwordReset";
+      } else {
+        authAction = "signIn";
+      }
+
+      const preAuthResult = await preAuthCheck({
+        email,
+        password,
+        action: authAction,
+      });
+
+      if (!preAuthResult.allowed) {
+        setErr(preAuthResult.error || "Authentication failed. Please try again.");
+        return;
+      }
+
       if (step === "signIn" || step === "signUp") {
         // Log the mandatory Data Protection & Security Policy agreement to the Audit Ledger
         recordPolicyAcceptance({
@@ -330,8 +353,10 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           flow: "email-verification",
         });
       } else {
+        // Password reset flow
+        const resetEmail = (step as { reset: string }).reset;
         await signIn("password", {
-          email: step.reset,
+          email: resetEmail,
           code: String(fd.get("code")).trim(),
           newPassword: String(fd.get("newPassword")).trim(),
           flow: "reset-verification",
@@ -339,22 +364,22 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       }
     } catch (caught: any) {
       const msg = String(caught?.message ?? caught ?? "");
+      // Generic error messages to prevent email enumeration (2026 best practice)
       if (msg.includes("InvalidAccountId") || msg.toLowerCase().includes("account not found")) {
-        setErr(`No account found for ${email}. Click "Create account" above to register this email.`);
+        setErr("Invalid email or password. Please try again.");
       } else if (msg.includes("InvalidSecret")) {
-        setErr("Incorrect password for this account. Please check your password and try again.");
+        setErr("Invalid email or password. Please try again.");
       } else if (msg.includes("TooManyFailedAttempts")) {
-        setErr("Too many failed login attempts. Please wait a moment and try again.");
+        setErr("Too many failed attempts. Please wait a few minutes and try again.");
       } else if (msg.toLowerCase().includes("already exists") || msg.includes("AccountAlreadyExists")) {
-        setStep("signIn");
-        setInfo(`An account for ${email} already exists. Enter your password below to sign in.`);
+        setErr("An account with this email already exists. Please sign in instead.");
       } else {
         setErr(
           step === "signIn"
-            ? `Sign in failed for ${email}. Verify your password, or click "Create account" if you have not registered yet.`
+            ? "Authentication failed. Please check your credentials and try again."
             : step === "signUp"
-            ? "Could not create account. If this email is already registered, switch to Sign In."
-            : "Invalid or expired verification code."
+            ? "Could not create account. If this email is already registered, please sign in instead."
+            : "Invalid or expired verification code. Please request a new code."
         );
       }
     } finally {
@@ -525,9 +550,9 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                       id="auth-password"
                       name="password"
                       type={showPw ? "text" : "password"}
-                      placeholder="Password (8+ characters)"
+                      placeholder="Password (12+ characters, mixed case, number, special)"
                       required
-                      minLength={8}
+                      minLength={12}
                       autoComplete={step === "signIn" ? "current-password" : "new-password"}
                     />
                     <button
@@ -555,9 +580,9 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                     id="auth-new-pw"
                     name="newPassword"
                     type="password"
-                    placeholder="8+ characters"
+                    placeholder="Password (12+ characters, mixed case, number, special)"
                     required
-                    minLength={8}
+                    minLength={12}
                     autoComplete="new-password"
                   />
                 </div>
@@ -737,7 +762,7 @@ function Dashboard({
     [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
   );
   const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
+    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
     [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
   );
   const users = useMemo(
@@ -1260,7 +1285,7 @@ function Passcodes({
     [remoteRows, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
   );
   const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
+    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
     [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
   );
   const users = useMemo(
@@ -2412,7 +2437,7 @@ function Users({
   const registry = useGateRegistry();
 
   const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
+    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
     [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
   );
 
@@ -4029,7 +4054,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   const registry = useGateRegistry();
 
   const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
+    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
     [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
   );
 

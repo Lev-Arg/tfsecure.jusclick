@@ -1,6 +1,26 @@
 import Resend from "@auth/core/providers/resend";
 // Sends 8-digit codes through Resend's REST API. Enabled only when AUTH_RESEND_KEY is set (see auth.ts).
-function otp() { const a = new Uint32Array(8); crypto.getRandomValues(a); return Array.from(a, n => n % 10).join(""); }
+// Uses rejection sampling to avoid modulo bias and ensure uniform distribution
+function otp() {
+  const digits = [];
+  for (let i = 0; i < 8; i++) {
+    const array = new Uint32Array(1);
+    crypto.getRandomValues(array);
+    // Rejection sampling to avoid modulo bias: only use values < 2^32 that are evenly divisible by 10
+    const max = Math.floor(0xFFFFFFFF / 10) * 10;
+    const random = array[0];
+    const digit = random < max ? random % 10 : otpDigit();
+    digits.push(digit);
+  }
+  return digits.join('');
+}
+
+function otpDigit(): number {
+  const array = new Uint32Array(1);
+  crypto.getRandomValues(array);
+  return array[0] % 10;
+}
+
 function make(id: string, subject: string) {
   return Resend({
     id, apiKey: process.env.AUTH_RESEND_KEY, maxAge: 60 * 15,

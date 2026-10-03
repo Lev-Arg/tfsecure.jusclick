@@ -105,3 +105,95 @@ export async function authorize(ctx: MutationCtx, a: Action, detail = "") {
   }
   return ok ? p! : null;
 }
+
+// CSRF validation helper - validates token and deletes it (one-time use)
+export async function validateCsrfToken(ctx: MutationCtx, token: string | null | undefined): Promise<boolean> {
+  if (!token) return false;
+  const userId = await getAuthUserId(ctx);
+  if (!userId) return false;
+
+  const stored = await ctx.db.query("csrfTokens")
+    .withIndex("by_token", q => q.eq("token", token))
+    .first();
+
+  if (!stored) return false;
+  if (stored.userId !== userId) return false;
+  if (stored.expiresAt < Date.now()) {
+    await ctx.db.delete(stored._id);
+    return false;
+  }
+
+  // One-time use: delete after validation
+  await ctx.db.delete(stored._id);
+  return true;
+}
+
+// Rate limiting helper - checks and enforces rate limits
+// Returns true if the action is allowed, false if rate limited
+export async function checkRateLimit(
+  ctx: MutationCtx,
+  identifier: string,
+  action: string,
+  maxAttempts: number,
+  windowMs: number
+): Promise<{ allowed: boolean; retryAfter?: number }> {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  // Clean up expired entries
+  const expired = await ctx.db
+    .query("rateLimits")
+    .withIndex("by_identifier_action", (q) =>
+      q.eq("identifier", identifier).eq("action", action)
+    )
+    .collect();
+
+  for (const entry of expired) {
+    if (entry.expiresAt < now) {
+      await ctx.db.delete(entry._id);
+    }
+  }
+
+  // Get current attempts within the window
+  const recent = await ctx.db
+    .query("rateLimits")
+    .withIndex("by_identifier_action", (q) =>
+      q.eq("identifier", identifier).eq("action", action)
+    )
+    .collect();
+
+  const validAttempts = recent.filter(
+    (entry) => entry.windowStart >= windowStart && entry.expiresAt >= now
+  );
+
+  if (validAttempts.length >= maxAttempts) {
+    // Find the oldest entry to calculate retry time
+    let oldest = validAttempts[0];
+    for (const entry of validAttempts) {
+      if (entry.windowStart < oldest.windowStart) {
+        oldest = entry;
+      }
+    }
+    const retryAfter = Math.ceil((oldest.windowStart + windowMs - now) / 1000);
+    return { allowed: false, retryAfter };
+  }
+
+  // Record this attempt
+  await ctx.db.insert("rateLimits", {
+    identifier,
+    action,
+    attempts: validAttempts.length + 1,
+    windowStart: now,
+    expiresAt: now + windowMs,
+  });
+
+  return { allowed: true };
+}
+
+// Rate limit configuration for authentication actions
+export const AUTH_RATE_LIMITS = {
+  signIn: { maxAttempts: 5, windowMs: 15 * 60 * 1000 }, // 5 attempts per 15 minutes
+  signUp: { maxAttempts: 3, windowMs: 60 * 60 * 1000 }, // 3 attempts per hour
+  passwordReset: { maxAttempts: 3, windowMs: 60 * 60 * 1000 }, // 3 attempts per hour
+  emailVerify: { maxAttempts: 5, windowMs: 15 * 60 * 1000 }, // 5 attempts per 15 minutes
+} as const;

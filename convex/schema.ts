@@ -35,4 +35,12 @@ export default defineSchema({
   notifications: defineTable({ userId: v.id("users"), kind: v.string(), message: v.string(), at: v.number(), read: v.boolean() }).index("by_user", ["userId", "at"]),
   settings: defineTable({ orgName: v.string(), accent: v.string(), defaultHours: v.number(), maxHours: v.number() }),
   audit: defineTable({ userId: v.optional(v.id("users")), name: v.string(), action: v.string(), detail: v.string(), ok: v.boolean(), at: v.number() }).index("by_time", ["at"]),
+  csrfTokens: defineTable({ token: v.string(), userId: v.id("users"), expiresAt: v.number() }).index("by_token", ["token"]),
+  rateLimits: defineTable({ 
+    identifier: v.string(), 
+    action: v.string(), 
+    attempts: v.number(), 
+    windowStart: v.number(), 
+    expiresAt: v.number() 
+  }).index("by_identifier_action", ["identifier", "action"]),
 });

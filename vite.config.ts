@@ -4,9 +4,57 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import * as vite from "vite";
 import { defineConfig, type Plugin, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
+import { z } from "zod";
 
 const isRolldownVite = "rolldownVersion" in vite;
 const SYNC_FILE_PATH = path.resolve(process.cwd(), ".tfsecure-lan-state.json");
+
+// Zod schema for validating sync payload (2026 best practice: strict validation)
+const PasscodeSchema = z.object({
+  _id: z.string(),
+  _creationTime: z.number(),
+  codeHash: z.string().regex(/^[a-f0-9]{64}$/, "Invalid codeHash format"),
+  visitorName: z.string().min(2).max(80).regex(/^[a-zA-Z\s\-\.]+$/, "Invalid visitor name"),
+  kind: z.enum(["visitor", "contractor", "supplier"]),
+  company: z.string().max(80).optional(),
+  hostDepartmentId: z.string().optional(),
+  hostName: z.string().max(80),
+  issuedBy: z.string(),
+  expiresAt: z.number(),
+  usedAt: z.number().optional(),
+  revokedAt: z.number().optional(),
+});
+
+const OnSiteRecordSchema = z.object({
+  id: z.string(),
+  passcodeId: z.string().optional(),
+  visitorName: z.string().min(2).max(80),
+  kind: z.enum(["visitor", "contractor", "supplier"]),
+  hostName: z.string().max(80),
+  checkedInAt: z.number(),
+  checkedInBy: z.string(),
+  expiresAt: z.number().optional(),
+});
+
+const SyncPayloadSchema = z.object({
+  __senderDeviceId: z.string().min(1).max(100).regex(/^dev_\d+_[a-z0-9]{6}$/, "Invalid device ID format"),
+  attachmentsByHash: z.record(z.any()).optional(),
+  attachmentsByPasscodeId: z.record(z.any()).optional(),
+  attachmentsByName: z.record(z.any()).optional(),
+  localPasscodes: z.array(PasscodeSchema).max(300, "Too many passcodes").optional(),
+  revokedPasscodeIds: z.record(z.number()).optional(),
+  usedPasscodeTimestamps: z.record(z.number()).optional(),
+  onSiteRecords: z.array(OnSiteRecordSchema).max(500, "Too many on-site records").optional(),
+  checkedOutPasscodeIds: z.record(z.object({
+    checkedOutAt: z.number(),
+    checkedOutBy: z.string(),
+    checkoutNotes: z.string().optional(),
+  })).optional(),
+  deniedPasscodeIds: z.record(z.any()).optional(),
+  deniedCodeHashes: z.record(z.any()).optional(),
+  localAuditEntries: z.array(z.any()).max(120).optional(),
+  localNotifications: z.array(z.any()).max(80).optional(),
+}).strict(); // Reject unknown properties
 
 function createLanSyncPlugin(): Plugin {
   let sharedStateJson = "{}";
@@ -43,6 +91,14 @@ function createLanSyncPlugin(): Plugin {
       }
 
       if (url === "/api/tfsecure-sync" && req.method === "GET") {
+        // Authentication check: verify Convex auth token from Authorization header
+        const authHeader = req.headers["authorization"];
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+          return;
+        }
+
         res.writeHead(200, {
           "Content-Type": "application/json; charset=utf-8",
           "Cache-Control": "no-store",
@@ -53,18 +109,31 @@ function createLanSyncPlugin(): Plugin {
       }
 
       if (url === "/api/tfsecure-sync" && req.method === "POST") {
+        // Authentication check: verify Convex auth token from Authorization header
+        const authHeader = req.headers["authorization"];
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+          return;
+        }
+
         let body = "";
         req.on("data", chunk => {
           body += String(chunk);
-          if (body.length > 8 * 1024 * 1024) {
+          // Reduced from 8MB to 1MB per 2026 best practices
+          if (body.length > 1 * 1024 * 1024) {
             req.destroy();
           }
         });
         req.on("end", () => {
           try {
             const parsed = JSON.parse(body);
-            if (parsed && typeof parsed === "object") {
-              sharedStateJson = body;
+            
+            // Validate with Zod schema (2026 best practice)
+            const validated = SyncPayloadSchema.parse(parsed);
+            
+            if (validated && typeof validated === "object") {
+              sharedStateJson = JSON.stringify(validated);
               lastUpdatedAt = Date.now();
               try {
                 fs.writeFileSync(SYNC_FILE_PATH, sharedStateJson, "utf-8");
@@ -73,7 +142,7 @@ function createLanSyncPlugin(): Plugin {
               }
               const payload = `data: ${JSON.stringify({
                 updatedAt: lastUpdatedAt,
-                senderDeviceId: parsed.__senderDeviceId,
+                senderDeviceId: validated.__senderDeviceId,
               })}\n\n`;
               for (const client of sseClients) {
                 try {
@@ -88,9 +157,11 @@ function createLanSyncPlugin(): Plugin {
               "Cache-Control": "no-store",
             });
             res.end(JSON.stringify({ ok: true, updatedAt: lastUpdatedAt }));
-          } catch {
+          } catch (error) {
+            // Log validation errors for security monitoring
+            console.error("Sync payload validation failed:", error);
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ ok: false }));
+            res.end(JSON.stringify({ ok: false, error: "Invalid payload" }));
           }
         });
         return;
