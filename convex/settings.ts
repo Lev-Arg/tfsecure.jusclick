@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { authorize, writeAudit } from "./lib";
+import { authorize, sanitizeServerText, validateCsrfToken, writeAudit } from "./lib";
 
 export const DEFAULTS = { orgName: "TF Commodities", accent: "#e0a100", defaultHours: 4, maxHours: 72 };
 
@@ -15,10 +15,19 @@ export const get = query({
 });
 
 export const update = mutation({
-  args: { orgName: v.string(), accent: v.string(), defaultHours: v.number(), maxHours: v.number() },
+  args: {
+    orgName: v.string(),
+    accent: v.string(),
+    defaultHours: v.number(),
+    maxHours: v.number(),
+    csrfToken: v.optional(v.string()),
+  },
   handler: async (ctx, a) => {
     const me = await authorize(ctx, "settings.update", "branding");
     if (!me) return { ok: false as const, error: "Not permitted" };
+    if (a.csrfToken && !(await validateCsrfToken(ctx, a.csrfToken))) {
+      return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+    }
     if (!/^#[0-9a-fA-F]{6}$/.test(a.accent)) {
       return { ok: false as const, error: "Accent must be a hex colour like #e0a100" };
     }
@@ -27,7 +36,7 @@ export const update = mutation({
     const rawDefault = Number.isFinite(a.defaultHours) ? Math.round(a.defaultHours) : DEFAULTS.defaultHours;
     const defaultHours = Math.min(Math.max(rawDefault, 1), maxHours);
     const doc = {
-      orgName: a.orgName.trim().slice(0, 60) || DEFAULTS.orgName,
+      orgName: sanitizeServerText(a.orgName, 60) || DEFAULTS.orgName,
       accent: a.accent,
       maxHours,
       defaultHours,

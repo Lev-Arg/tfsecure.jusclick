@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { kind } from "./schema";
-import { authorize, can, currentProfile, notifyRoles, notifyUser, sanitizeServerText, writeAudit } from "./lib";
+import { authorize, can, currentProfile, notifyRoles, notifyUser, sanitizeServerText, validateCsrfToken, writeAudit } from "./lib";
 import { DEFAULTS } from "./settings";
 
 const LOCK_WINDOW = 10 * 60_000;
@@ -21,10 +21,14 @@ export const issue = mutation({
     hours: v.number(),
     company: v.optional(v.string()),
     hostDepartmentId: v.optional(v.id("departments")),
+    csrfToken: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const me = await authorize(ctx, "passcode.issue", a.visitorName);
     if (!me) return { ok: false as const, error: "Your role cannot issue passcodes" };
+    if (a.csrfToken && !(await validateCsrfToken(ctx, a.csrfToken))) {
+      return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+    }
 
     const name = sanitizeServerText(a.visitorName, 80);
     if (name.length < 2) return { ok: false as const, error: "Enter a valid visitor full name (at least 2 characters)" };
@@ -316,11 +320,17 @@ export const validate = mutation({
 });
 
 export const revoke = mutation({
-  args: { id: v.id("passcodes") },
+  args: {
+    id: v.id("passcodes"),
+    csrfToken: v.optional(v.string()),
+  },
   handler: async (ctx, a) => {
     const me = await authorize(ctx, "passcode.revoke", "revoke");
     const p = await ctx.db.get(a.id);
     if (!me || !p) return { ok: false as const, error: me ? "Not found" : "Your role cannot revoke passcodes" };
+    if (a.csrfToken && !(await validateCsrfToken(ctx, a.csrfToken))) {
+      return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+    }
 
     // BOLA Prevention:
     // - "staff": can ONLY revoke passcodes they individually issued within their department

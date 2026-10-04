@@ -24,6 +24,16 @@ export function sanitizeText(raw: string | undefined, maxLen = 120): string {
 const CSRF_STORAGE_KEY = "tfsecure_csrf_token_v1";
 let inMemoryCsrfToken: string | null = null;
 
+export function setCsrfToken(token: string) {
+  if (!token || !/^[0-9a-f]{64}$/.test(token)) return;
+  inMemoryCsrfToken = token;
+  try {
+    sessionStorage.setItem(CSRF_STORAGE_KEY, token);
+  } catch {
+    // ignore storage restriction
+  }
+}
+
 export function getCsrfToken(): string {
   // Return existing token if still valid
   if (inMemoryCsrfToken && /^[0-9a-f]{64}$/.test(inMemoryCsrfToken)) {
@@ -63,15 +73,18 @@ export function getCsrfToken(): string {
 }
 
 /**
- * Verify CSRF token - DEPRECATED: validation now happens server-side
- * This function is kept for backward compatibility but always returns true
- * Server-side validation in Convex mutations using validateCsrfToken() is the authoritative check
+ * Verify CSRF token using constant-time comparison to prevent timing attacks,
+ * while also allowing server-side validation in Convex mutations via validateCsrfToken().
  */
 export function verifyCsrfToken(submittedToken: string | null | undefined): boolean {
-  // Client-side verification is no longer secure per 2026 best practices
-  // Server-side validation in Convex is the authoritative check
-  // This function returns true to allow the request to proceed to server validation
-  return true;
+  if (!submittedToken) return false;
+  const expected = getCsrfToken();
+  if (submittedToken.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= submittedToken.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 /* ==================== PROFESSIONAL SOFT HIGH STRETCHED DING-DONG CHIME ==================== */
@@ -802,16 +815,40 @@ function mergeRemoteState(incoming: Partial<RegistryState>) {
   subscribers.forEach(fn => fn());
 }
 
+function resolveSyncBearerToken(): string {
+  try {
+    const direct = localStorage.getItem("ConvexCredentials");
+    if (direct) return direct;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("__convexAuthJWT")) {
+        const val = localStorage.getItem(k);
+        if (val) return val;
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return getCsrfToken();
+}
+
 function pushStateToLanServer() {
   if (typeof window === "undefined" || isApplyingRemoteSync) return;
   try {
-    // Only send safe fields through BroadcastChannel - never broadcast secrets
+    // Only send safe operational fields through BroadcastChannel - never broadcast secrets
     const safeBroadcastState = {
+      attachmentsByHash: state.attachmentsByHash,
+      attachmentsByPasscodeId: state.attachmentsByPasscodeId,
+      attachmentsByName: state.attachmentsByName,
       localPasscodes: state.localPasscodes,
       onSiteRecords: state.onSiteRecords,
       revokedPasscodeIds: state.revokedPasscodeIds,
       usedPasscodeTimestamps: state.usedPasscodeTimestamps,
       checkedOutPasscodeIds: state.checkedOutPasscodeIds,
+      deniedPasscodeIds: state.deniedPasscodeIds,
+      deniedCodeHashes: state.deniedCodeHashes,
+      localAuditEntries: state.localAuditEntries.slice(0, 120),
+      localNotifications: state.localNotifications.slice(0, 80),
     };
     syncChannel?.postMessage({ __senderDeviceId: CLIENT_DEVICE_ID, state: safeBroadcastState });
   } catch {
@@ -833,14 +870,13 @@ function pushStateToLanServer() {
       localAuditEntries: state.localAuditEntries.slice(0, 120),
       localNotifications: state.localNotifications.slice(0, 80),
     };
-    
-    // Get Convex auth token for authentication
-    const convexToken = localStorage.getItem("ConvexCredentials");
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (convexToken) {
-      headers["Authorization"] = `Bearer ${convexToken}`;
-    }
-    
+
+    const bearer = resolveSyncBearerToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+    };
+
     fetch("/api/tfsecure-sync", {
       method: "POST",
       headers,
@@ -854,14 +890,13 @@ function pushStateToLanServer() {
 async function pullStateFromLanServer() {
   if (typeof window === "undefined") return;
   try {
-    // Get Convex auth token from localStorage (Convex stores it there)
-    const convexToken = localStorage.getItem("ConvexCredentials");
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (convexToken) {
-      headers["Authorization"] = `Bearer ${convexToken}`;
-    }
+    const bearer = resolveSyncBearerToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer}`,
+    };
 
-    const res = await fetch(`/api/tfsecure-sync?t=${Date.now()}`, { 
+    const res = await fetch(`/api/tfsecure-sync?t=${Date.now()}`, {
       cache: "no-store",
       headers,
     });
@@ -907,8 +942,20 @@ if (typeof window !== "undefined") {
           const now = Date.now();
           if (now - lastLocalGateOperatorActionAt < 500) return;
           
-          // Only merge safe fields - never broadcast secrets
+          // Only merge safe operational fields - never broadcast secrets
           const safeState = {
+            attachmentsByHash:
+              typeof ev.data.state.attachmentsByHash === "object" && ev.data.state.attachmentsByHash
+                ? ev.data.state.attachmentsByHash
+                : {},
+            attachmentsByPasscodeId:
+              typeof ev.data.state.attachmentsByPasscodeId === "object" && ev.data.state.attachmentsByPasscodeId
+                ? ev.data.state.attachmentsByPasscodeId
+                : {},
+            attachmentsByName:
+              typeof ev.data.state.attachmentsByName === "object" && ev.data.state.attachmentsByName
+                ? ev.data.state.attachmentsByName
+                : {},
             localPasscodes: Array.isArray(ev.data.state.localPasscodes) 
               ? ev.data.state.localPasscodes.filter((p: any) => 
                   p && 
@@ -936,6 +983,18 @@ if (typeof window !== "undefined") {
             checkedOutPasscodeIds: typeof ev.data.state.checkedOutPasscodeIds === "object"
               ? ev.data.state.checkedOutPasscodeIds
               : {},
+            deniedPasscodeIds: typeof ev.data.state.deniedPasscodeIds === "object"
+              ? ev.data.state.deniedPasscodeIds
+              : {},
+            deniedCodeHashes: typeof ev.data.state.deniedCodeHashes === "object"
+              ? ev.data.state.deniedCodeHashes
+              : {},
+            localAuditEntries: Array.isArray(ev.data.state.localAuditEntries)
+              ? ev.data.state.localAuditEntries.slice(0, 120)
+              : [],
+            localNotifications: Array.isArray(ev.data.state.localNotifications)
+              ? ev.data.state.localNotifications.slice(0, 80)
+              : [],
           };
           
           mergeRemoteState(safeState);

@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { authorize, currentProfile, writeAudit } from "./lib";
+import { authorize, currentProfile, sanitizeServerText, validateCsrfToken, writeAudit } from "./lib";
 
 export const list = query({
   args: {},
@@ -9,11 +9,14 @@ export const list = query({
 });
 
 export const add = mutation({
-  args: { name: v.string() },
+  args: { name: v.string(), csrfToken: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const me = await authorize(ctx, "departments.manage", a.name);
     if (!me) return { ok: false as const, error: "Not permitted" };
-    const name = a.name.trim().slice(0, 60);
+    if (a.csrfToken && !(await validateCsrfToken(ctx, a.csrfToken))) {
+      return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+    }
+    const name = sanitizeServerText(a.name, 60);
     if (name.length < 2) return { ok: false as const, error: "Enter a valid department name" };
     const existing = await ctx.db.query("departments").withIndex("by_name").take(100);
     if (existing.some(d => d.name.toLowerCase() === name.toLowerCase())) {
@@ -33,10 +36,13 @@ export const add = mutation({
 });
 
 export const remove = mutation({
-  args: { id: v.id("departments") },
+  args: { id: v.id("departments"), csrfToken: v.optional(v.string()) },
   handler: async (ctx, a) => {
     const me = await authorize(ctx, "departments.manage", "remove");
     if (!me) return { ok: false as const, error: "Not permitted" };
+    if (a.csrfToken && !(await validateCsrfToken(ctx, a.csrfToken))) {
+      return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+    }
     const d = await ctx.db.get(a.id);
     if (!d) return { ok: false as const, error: "Not found" };
     const allDepts = await ctx.db.query("departments").withIndex("by_name").take(100);

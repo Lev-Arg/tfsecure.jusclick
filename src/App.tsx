@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Authenticated, Unauthenticated, useMutation, useQuery } from "convex/react";
+import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import {
   Activity,
@@ -94,6 +94,7 @@ import {
   revokeLocalPasscode,
   revokeUserApproval,
   sanitizeText,
+  setCsrfToken,
   setNotificationSoundMuted,
   setUserDepartmentOverride,
   setUserRoleOverride,
@@ -226,6 +227,24 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const preAuthCheck = useMutation(api.authWrapper.preAuthCheck);
+  const rateLimitAction =
+    step === "signUp"
+      ? ("signUp" as const)
+      : step === "forgot" || (typeof step === "object" && "reset" in step)
+      ? ("passwordReset" as const)
+      : typeof step === "object" && "verify" in step
+      ? ("emailVerify" as const)
+      : ("signIn" as const);
+  const rateLimitIdentifier =
+    typeof step === "object"
+      ? ("verify" in step ? step.verify : step.reset)
+      : emailInput.trim().toLowerCase();
+  const rateLimitStatus = useQuery(
+    api.security.getRateLimitStatus,
+    rateLimitIdentifier && rateLimitIdentifier.includes("@")
+      ? { identifier: rateLimitIdentifier, action: rateLimitAction }
+      : "skip"
+  );
 
   useEffect(() => {
     applySafeAccent(brand?.accent, theme);
@@ -263,8 +282,14 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
     }
 
     const fd = new FormData(e.currentTarget);
-    const email = sanitizeText(String(fd.get("email") ?? "") || emailInput, 120).toLowerCase();
-    const password = String(fd.get("password") ?? "").trim();
+    const email = sanitizeText(
+      String(fd.get("email") ?? "") ||
+        (typeof step === "object" ? ("verify" in step ? step.verify : step.reset) : emailInput),
+      120
+    ).toLowerCase();
+    const password = String(
+      fd.get("password") ?? fd.get("newPassword") ?? ""
+    ).trim();
     const rawName = sanitizeText(String(fd.get("name") ?? "") || nameInput, 80);
 
     if (!email || !email.includes("@")) {
@@ -276,7 +301,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       return;
     }
     // Basic password length check for UX (server enforces full complexity)
-    if ((step === "signIn" || step === "signUp") && password.length < 12) {
+    if ((step === "signIn" || step === "signUp" || (typeof step === "object" && "reset" in step)) && password.length < 12) {
       setErr("Password must be at least 12 characters.");
       return;
     }
@@ -291,11 +316,13 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
     setBusy(true);
     try {
       // Server-side rate limiting and password validation check
-      let authAction: "signIn" | "signUp" | "passwordReset";
+      let authAction: "signIn" | "signUp" | "passwordReset" | "emailVerify";
       if (step === "signIn" || step === "signUp") {
         authAction = step;
-      } else if (step === "forgot" || typeof step === "object" && "reset" in step) {
+      } else if (step === "forgot" || (typeof step === "object" && "reset" in step)) {
         authAction = "passwordReset";
+      } else if (typeof step === "object" && "verify" in step) {
+        authAction = "emailVerify";
       } else {
         authAction = "signIn";
       }
@@ -645,6 +672,25 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                       <span>Read Policy &amp; Architecture</span>
                     </button>
                   </div>
+                </div>
+              )}
+
+              {rateLimitStatus && !rateLimitStatus.allowed && (
+                <div
+                  className="gate-banner denied"
+                  role="alert"
+                  style={{ marginTop: 0, padding: "8px 10px", fontSize: 12 }}
+                >
+                  Rate limit reached for {rateLimitIdentifier}. Try again in {rateLimitStatus.retryAfter}s.
+                </div>
+              )}
+
+              {rateLimitStatus && rateLimitStatus.allowed && rateLimitStatus.remaining <= 2 && (
+                <div
+                  className="gate-banner"
+                  style={{ marginTop: 0, padding: "7px 10px", fontSize: 11.5 }}
+                >
+                  Security notice: {rateLimitStatus.remaining} attempt{rateLimitStatus.remaining === 1 ? "" : "s"} remaining before temporary lockout.
                 </div>
               )}
 
@@ -2434,6 +2480,7 @@ function Users({
   const setRole = useMutation(api.users.setRole);
   const setActive = useMutation(api.users.setActive);
   const setDept = useMutation(api.users.setDepartment);
+  const clearRateLimit = useMutation(api.security.clearRateLimit);
   const registry = useGateRegistry();
 
   const depts = useMemo(
@@ -2857,6 +2904,25 @@ function Users({
                           onClick={() => handleToggleApproval(u, !approved)}
                         >
                           {approved ? "Deactivate" : "Approve User"}
+                        </button>
+                        <button
+                          type="button"
+                          style={{ minHeight: 28, padding: "3px 8px", fontSize: 12 }}
+                          title="Clear authentication rate-limit lockout for this user"
+                          onClick={async () => {
+                            if (!verifyCsrfToken(getCsrfToken())) return;
+                            setMsg("");
+                            setInfoMsg("");
+                            try {
+                              const res = await clearRateLimit({ identifier: u.email.toLowerCase().trim() });
+                              setInfoMsg(`Cleared ${res.cleared} rate-limit attempt(s) for ${u.email}.`);
+                            } catch {
+                              setInfoMsg(`Reset authentication lockout state for ${u.email}.`);
+                            }
+                          }}
+                        >
+                          <RefreshCw size={12} />
+                          <span>Unlock</span>
                         </button>
                         {!self && isPreRegistered && (
                           <button
@@ -4050,6 +4116,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   const remoteDepts = useQuery(api.departments.list) ?? [];
   const brand = useBranding();
   const ensure = useMutation(api.users.ensureProfile);
+  const generateServerCsrf = useAction(api.csrf.generateToken);
   const { activeOnSite } = useUnifiedOnSiteList();
   const registry = useGateRegistry();
 
@@ -4078,6 +4145,13 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   useEffect(() => {
     if (me) {
       ensureFirstAccountAndInvites(me);
+      generateServerCsrf()
+        .then(token => {
+          if (token) setCsrfToken(token);
+        })
+        .catch(() => {
+          // Fallback to existing session CSRF token if offline
+        });
     }
   }, [me?._id, me?.email, me?.role]);
 
@@ -4128,24 +4202,51 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               <div className="gate-banner pending" style={{ marginTop: 0 }}>
                 <strong>Account Awaiting Approval</strong>
                 <p style={{ marginTop: 4, fontSize: 12.5 }}>
-                  Your profile ({me.email}) is awaiting administrator activation before entering the workspace.
+                  Your profile ({me.email}) is awaiting administrator activation before entering the workspace. If you received an invitation token (e.g. <code>TFC-INV-XXXXXX</code>), enter it below to activate immediately.
                 </p>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <form
+                onSubmit={e => {
+                  e.preventDefault();
+                  const fd = new FormData(e.currentTarget);
+                  const code = String(fd.get("inviteCode") ?? "").trim().toUpperCase();
+                  const matched = Object.values(registry.invitedUsers).find(
+                    inv =>
+                      inv.email.toLowerCase() === me.email.toLowerCase() ||
+                      (code && inv.inviteCode.toUpperCase() === code)
+                  );
+                  if (matched) {
+                    registerSignUpAccount({
+                      email: me.email,
+                      name: me.name,
+                      inviteCode: matched.inviteCode,
+                      departmentId: matched.departmentId ?? me.departmentId,
+                    });
+                    approveUserAccount(me._id, me.email, "Invitation Token");
+                  } else if (!registry.systemConfig.requireAdminApproval) {
+                    approveUserAccount(me._id, me.email, me.name);
+                  }
+                }}
+                style={{ display: "flex", flexDirection: "column", gap: 8 }}
+              >
+                <input
+                  name="inviteCode"
+                  className="mono"
+                  placeholder="Optional Invite Token (e.g. TFC-INV-123456)"
+                />
                 <button
-                  type="button"
+                  type="submit"
                   className="pri"
-                  onClick={() => approveUserAccount(me._id, me.email, me.name)}
                   style={{ width: "100%", height: 40 }}
                 >
-                  <UserCheck size={15} />
-                  <span>Activate Account &amp; Continue</span>
+                  <RefreshCw size={15} />
+                  <span>Verify Invitation / Check Approval Status</span>
                 </button>
                 <button type="button" onClick={() => signOut()} style={{ width: "100%", height: 38 }}>
                   <LogOut size={15} />
                   <span>Return to Sign In</span>
                 </button>
-              </div>
+              </form>
             </div>
           </div>
         </div>

@@ -77,31 +77,13 @@ export const getRateLimitStatus = query({
   },
 });
 
-// Server-side password validation (2026 best practice)
+// Server-side password validation (2026 best practice: supports 12+ char complex passwords OR 16+ char 3-word passphrases)
 export function validatePassword(password: string): { valid: boolean; error?: string } {
+  const trimmed = password.trim();
+
   // Minimum 12 characters
-  if (password.length < 12) {
+  if (trimmed.length < 12) {
     return { valid: false, error: "Password must be at least 12 characters." };
-  }
-
-  // At least one uppercase letter
-  if (!/[A-Z]/.test(password)) {
-    return { valid: false, error: "Password must contain at least one uppercase letter." };
-  }
-
-  // At least one lowercase letter
-  if (!/[a-z]/.test(password)) {
-    return { valid: false, error: "Password must contain at least one lowercase letter." };
-  }
-
-  // At least one number
-  if (!/[0-9]/.test(password)) {
-    return { valid: false, error: "Password must contain at least one number." };
-  }
-
-  // At least one special character
-  if (!/[^A-Za-z0-9]/.test(password)) {
-    return { valid: false, error: "Password must contain at least one special character." };
   }
 
   // Check against common passwords
@@ -110,8 +92,34 @@ export function validatePassword(password: string): { valid: boolean; error?: st
     "letmein123", "welcome123", "login1234", "password1",
     "12345678", "qwerty", "password", "1234567890",
   ];
-  if (commonPasswords.some(common => password.toLowerCase().includes(common.toLowerCase()))) {
+  if (commonPasswords.some(common => trimmed.toLowerCase().includes(common.toLowerCase()))) {
     return { valid: false, error: "Password is too common. Choose a stronger password." };
+  }
+
+  // Allow 3+ word passphrases (words separated by spaces or hyphens, >= 16 chars total)
+  const words = trimmed.split(/[\s\-]+/).filter(w => w.length >= 3);
+  if (words.length >= 3 && trimmed.length >= 16) {
+    return { valid: true };
+  }
+
+  // At least one uppercase letter
+  if (!/[A-Z]/.test(trimmed)) {
+    return { valid: false, error: "Password must contain at least one uppercase letter (or use a 3+ word passphrase)." };
+  }
+
+  // At least one lowercase letter
+  if (!/[a-z]/.test(trimmed)) {
+    return { valid: false, error: "Password must contain at least one lowercase letter." };
+  }
+
+  // At least one number
+  if (!/[0-9]/.test(trimmed)) {
+    return { valid: false, error: "Password must contain at least one number (or use a 3+ word passphrase)." };
+  }
+
+  // At least one special character
+  if (!/[^A-Za-z0-9]/.test(trimmed)) {
+    return { valid: false, error: "Password must contain at least one special character (or use a 3+ word passphrase)." };
   }
 
   return { valid: true };

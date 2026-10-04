@@ -10,7 +10,12 @@ export const preAuthCheck = mutation({
   args: {
     email: v.string(),
     password: v.string(),
-    action: v.union(v.literal("signIn"), v.literal("signUp"), v.literal("passwordReset")),
+    action: v.union(
+      v.literal("signIn"),
+      v.literal("signUp"),
+      v.literal("passwordReset"),
+      v.literal("emailVerify")
+    ),
   },
   handler: async (ctx, args) => {
     const identifier = args.email.toLowerCase().trim();
@@ -33,8 +38,8 @@ export const preAuthCheck = mutation({
       };
     }
 
-    // Validate password for signUp and passwordReset
-    if (args.action === "signUp" || args.action === "passwordReset") {
+    // Validate password for signUp and passwordReset when a password is provided
+    if ((args.action === "signUp" || args.action === "passwordReset") && args.password.length > 0) {
       const passwordValidation = validatePassword(args.password);
       if (!passwordValidation.valid) {
         return {

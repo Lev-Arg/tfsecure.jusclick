@@ -3,7 +3,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { role } from "./schema";
-import { authorize, can, currentProfile, notifyRoles, sanitizeServerText, writeAudit } from "./lib";
+import { authorize, can, currentProfile, notifyRoles, sanitizeServerText, validateCsrfToken, writeAudit } from "./lib";
 
 export const me = query({ args: {}, handler: ctx => currentProfile(ctx) });
 
@@ -37,7 +37,7 @@ export const ensureProfile = mutation({
       name: cleanName,
       email: cleanEmail,
       role: first ? "admin" : "staff",
-      active: true,
+      active: first,
       departmentId: defaultDept?._id,
     });
 
@@ -71,10 +71,14 @@ async function adminEdit(
   profileId: Id<"profiles">,
   detail: string,
   patch: (t: Doc<"profiles">, me: Doc<"profiles">) => Promise<string | null> | string | null,
-  allowSelf = false
+  allowSelf = false,
+  csrfToken?: string
 ) {
   const me = await authorize(ctx, "users.manage", detail);
   if (!me) return { ok: false as const, error: "Not permitted" };
+  if (csrfToken && !(await validateCsrfToken(ctx, csrfToken))) {
+    return { ok: false as const, error: "Invalid or expired CSRF token. Refresh and try again." };
+  }
   const t = await ctx.db.get(profileId);
   if (!t) return { ok: false as const, error: "User not found" };
   if (!allowSelf && t.userId === me.userId) {
@@ -87,39 +91,53 @@ async function adminEdit(
 }
 
 export const setRole = mutation({
-  args: { profileId: v.id("profiles"), role },
+  args: { profileId: v.id("profiles"), role, csrfToken: v.optional(v.string()) },
   handler: (ctx, a) =>
-    adminEdit(ctx, a.profileId, `role -> ${a.role}`, async t => {
-      if (t.role === "admin" && a.role !== "admin") {
-        const allProfiles = await ctx.db.query("profiles").take(200);
-        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
-        if (activeAdmins.length <= 1) {
-          return "Cannot demote the last active administrator";
+    adminEdit(
+      ctx,
+      a.profileId,
+      `role -> ${a.role}`,
+      async t => {
+        if (t.role === "admin" && a.role !== "admin") {
+          const allProfiles = await ctx.db.query("profiles").take(200);
+          const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
+          if (activeAdmins.length <= 1) {
+            return "Cannot demote the last active administrator";
+          }
         }
-      }
-      await ctx.db.patch(t._id, { role: a.role });
-      return null;
-    }),
+        await ctx.db.patch(t._id, { role: a.role });
+        return null;
+      },
+      false,
+      a.csrfToken
+    ),
 });
 
 export const setActive = mutation({
-  args: { profileId: v.id("profiles"), active: v.boolean() },
+  args: { profileId: v.id("profiles"), active: v.boolean(), csrfToken: v.optional(v.string()) },
   handler: (ctx, a) =>
-    adminEdit(ctx, a.profileId, a.active ? "approved / activated" : "deactivated", async t => {
-      if (t.role === "admin" && !a.active) {
-        const allProfiles = await ctx.db.query("profiles").take(200);
-        const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
-        if (activeAdmins.length <= 1) {
-          return "Cannot deactivate the last active administrator";
+    adminEdit(
+      ctx,
+      a.profileId,
+      a.active ? "approved / activated" : "deactivated",
+      async t => {
+        if (t.role === "admin" && !a.active) {
+          const allProfiles = await ctx.db.query("profiles").take(200);
+          const activeAdmins = allProfiles.filter(p => p.role === "admin" && p.active === true);
+          if (activeAdmins.length <= 1) {
+            return "Cannot deactivate the last active administrator";
+          }
         }
-      }
-      await ctx.db.patch(t._id, { active: a.active });
-      return null;
-    }),
+        await ctx.db.patch(t._id, { active: a.active });
+        return null;
+      },
+      false,
+      a.csrfToken
+    ),
 });
 
 export const setDepartment = mutation({
-  args: { profileId: v.id("profiles"), departmentId: v.optional(v.id("departments")) },
+  args: { profileId: v.id("profiles"), departmentId: v.optional(v.id("departments")), csrfToken: v.optional(v.string()) },
   handler: (ctx, a) =>
     adminEdit(
       ctx,
@@ -133,6 +151,7 @@ export const setDepartment = mutation({
         await ctx.db.patch(t._id, { departmentId: a.departmentId });
         return null;
       },
-      true
+      true,
+      a.csrfToken
     ),
 });
