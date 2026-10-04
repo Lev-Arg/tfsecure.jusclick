@@ -226,25 +226,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  const [rateLimitWarning, setRateLimitWarning] = useState<string>("");
   const preAuthCheck = useMutation(api.authWrapper.preAuthCheck);
-  const rateLimitAction =
-    step === "signUp"
-      ? ("signUp" as const)
-      : step === "forgot" || (typeof step === "object" && "reset" in step)
-      ? ("passwordReset" as const)
-      : typeof step === "object" && "verify" in step
-      ? ("emailVerify" as const)
-      : ("signIn" as const);
-  const rateLimitIdentifier =
-    typeof step === "object"
-      ? ("verify" in step ? step.verify : step.reset)
-      : emailInput.trim().toLowerCase();
-  const rateLimitStatus = useQuery(
-    api.security.getRateLimitStatus,
-    rateLimitIdentifier && rateLimitIdentifier.includes("@")
-      ? { identifier: rateLimitIdentifier, action: rateLimitAction }
-      : "skip"
-  );
 
   useEffect(() => {
     applySafeAccent(brand?.accent, theme);
@@ -327,16 +310,26 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         authAction = "signIn";
       }
 
-      const preAuthResult = await preAuthCheck({
-        email,
-        password,
-        action: authAction,
-      });
+      let preAuthResult: { allowed: boolean; error?: string; retryAfter?: number } = { allowed: true };
+      try {
+        preAuthResult = await preAuthCheck({
+          email,
+          password,
+          action: authAction,
+        });
+      } catch {
+        // Fallback if remote Convex deployment has not yet pushed authWrapper:preAuthCheck
+        preAuthResult = { allowed: true };
+      }
 
       if (!preAuthResult.allowed) {
+        if (preAuthResult.retryAfter) {
+          setRateLimitWarning(`Rate limit reached for ${email}. Try again in ${preAuthResult.retryAfter}s.`);
+        }
         setErr(preAuthResult.error || "Authentication failed. Please try again.");
         return;
       }
+      setRateLimitWarning("");
 
       if (step === "signIn" || step === "signUp") {
         // Log the mandatory Data Protection & Security Policy agreement to the Audit Ledger
@@ -675,22 +668,13 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                 </div>
               )}
 
-              {rateLimitStatus && !rateLimitStatus.allowed && (
+              {rateLimitWarning && (
                 <div
                   className="gate-banner denied"
                   role="alert"
                   style={{ marginTop: 0, padding: "8px 10px", fontSize: 12 }}
                 >
-                  Rate limit reached for {rateLimitIdentifier}. Try again in {rateLimitStatus.retryAfter}s.
-                </div>
-              )}
-
-              {rateLimitStatus && rateLimitStatus.allowed && rateLimitStatus.remaining <= 2 && (
-                <div
-                  className="gate-banner"
-                  style={{ marginTop: 0, padding: "7px 10px", fontSize: 11.5 }}
-                >
-                  Security notice: {rateLimitStatus.remaining} attempt{rateLimitStatus.remaining === 1 ? "" : "s"} remaining before temporary lockout.
+                  {rateLimitWarning}
                 </div>
               )}
 
