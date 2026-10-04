@@ -327,17 +327,22 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           setRateLimitWarning(`Rate limit reached for ${email}. Try again in ${preAuthResult.retryAfter}s.`);
         }
         setErr(preAuthResult.error || "Authentication failed. Please try again.");
+        setBusy(false);
         return;
       }
       setRateLimitWarning("");
 
       if (step === "signIn" || step === "signUp") {
         // Log the mandatory Data Protection & Security Policy agreement to the Audit Ledger
-        recordPolicyAcceptance({
-          email,
-          name: rawName || email.split("@")[0],
-          context: step === "signUp" ? "signup" : "pre_login",
-        });
+        try {
+          recordPolicyAcceptance({
+            email,
+            name: rawName || email.split("@")[0],
+            context: step === "signUp" ? "signup" : "pre_login",
+          });
+        } catch (e) {
+          console.error("Failed to record policy acceptance:", e);
+        }
 
         const chosenDeptId = signupDeptId || matchedInvite?.departmentId || depts[0]?._id;
 
@@ -351,12 +356,16 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         const r = await signIn("password", fd);
         if (step === "signUp") {
           // Only register signup account AFTER Convex auth succeeds; role is determined strictly by invite or defaults to "staff"
-          registerSignUpAccount({
-            email,
-            name: rawName,
-            inviteCode: inviteCodeInput.trim() || matchedInvite?.inviteCode,
-            departmentId: chosenDeptId,
-          });
+          try {
+            registerSignUpAccount({
+              email,
+              name: rawName,
+              inviteCode: inviteCodeInput.trim() || matchedInvite?.inviteCode,
+              departmentId: chosenDeptId,
+            });
+          } catch (e) {
+            console.error("Failed to register signup account:", e);
+          }
         }
         if (!r.signingIn) {
           setStep({ verify: email });
@@ -383,6 +392,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         });
       }
     } catch (caught: any) {
+      console.error("Authentication error:", caught);
       const msg = String(caught?.message ?? caught ?? "");
       // Generic error messages to prevent email enumeration (2026 best practice)
       if (msg.includes("InvalidAccountId") || msg.toLowerCase().includes("account not found")) {
