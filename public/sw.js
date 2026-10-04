@@ -3,7 +3,7 @@
  * Zero external bundler plugin dependencies; supports iOS, Android, Windows, and Termux local hosts.
  */
 
-const CACHE_NAME = "tfsecure-shell-v2.6.2";
+const CACHE_NAME = "tfsecure-shell-v2.6.3";
 const PRECACHE_ASSETS = [
   "/",
   "/index.html",

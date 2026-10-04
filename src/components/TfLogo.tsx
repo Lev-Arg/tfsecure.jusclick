@@ -14,8 +14,35 @@ export const SECURITY_CHECKPOINT_IMG = securityCheckpointImg;
  */
 export function syncSystemLogoAndFavicons(customLogoUrl?: string): void {
   if (typeof document === "undefined") return;
-  const activeLogoSrc = customLogoUrl?.trim() || tfLogoExact;
-  const isDefaultWhiteLogo = !customLogoUrl?.trim();
+  const trimmedCustom = customLogoUrl?.trim();
+
+  // When using the default uploaded logo suite, link directly to the high-resolution PNG assets
+  if (!trimmedCustom) {
+    const iconLinks = document.querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="shortcut icon"]');
+    iconLinks.forEach(link => {
+      if (link.sizes?.value === "512x512") {
+        link.href = "/pwa-512x512.png";
+        link.type = "image/png";
+      } else if (link.type === "image/svg+xml") {
+        link.href = "/icon.svg";
+      } else {
+        link.href = "/pwa-192x192.png";
+        link.type = "image/png";
+      }
+    });
+    const appleLinks = document.querySelectorAll<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    appleLinks.forEach(link => {
+      link.href = "/apple-touch-icon.png";
+    });
+    const tileMeta = document.querySelector<HTMLMetaElement>('meta[name="msapplication-TileImage"]');
+    if (tileMeta) {
+      tileMeta.content = "/pwa-192x192.png";
+    }
+    return;
+  }
+
+  const activeLogoSrc = trimmedCustom;
+  const isDefaultWhiteLogo = false;
 
   const applyHrefToIcons = (href: string, type = "image/png") => {
     const iconSelectors = [
