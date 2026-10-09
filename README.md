@@ -1,6 +1,6 @@
 # Jusclick
 
-Jusclick is a gate-access and security operations app for TF Commodities. It provides visitor passcodes, gate check-in and check-out, people-on-site visibility, user and department administration, and an audit trail.
+Jusclick is a gate-access and security operations app customerly built for TF Commodities. It provides visitor passcodes, gate check-in and check-out, people-on-site visibility, user and department administration, and an audit trail.
 
 The application is built with React, TypeScript, and Vite, with Convex providing authentication, server functions, and persistent data. Access control is enforced by the Convex backend; hiding a control in the interface is not treated as authorization.
 
