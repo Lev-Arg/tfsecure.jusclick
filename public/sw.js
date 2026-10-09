@@ -1,14 +1,15 @@
 /**
- * TFsecure — Self-Contained Progressive Web App Service Worker
+ * Jusclick — Self-Contained Progressive Web App Service Worker
  * Zero external bundler plugin dependencies; supports iOS, Android, Windows, and Termux local hosts.
  */
 
-const CACHE_NAME = "tfsecure-shell-v2.6.3";
+const CACHE_NAME = "Jusclick-shell-v2.6.4";
 const PRECACHE_ASSETS = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
   "/version.json",
+  "/architecture-diagram.html",
   "/tflogo1.png",
   "/apple-touch-icon.png",
   "/pwa-192x192.png",

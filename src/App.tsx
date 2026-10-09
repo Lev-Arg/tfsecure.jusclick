@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Authenticated, Unauthenticated, useAction, useMutation, useQuery } from "convex/react";
-import { useAuthActions } from "@convex-dev/auth/react";
+import { useAction, useMutation, useQuery } from "convex/react";
+import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import {
   Activity,
   Bell as BellIcon,
@@ -10,6 +10,7 @@ import {
   Copy,
   Database,
   Download,
+  DoorOpen,
   Eye,
   EyeOff,
   FileText,
@@ -17,7 +18,6 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
-  Menu,
   Moon,
   Plus,
   Printer,
@@ -57,47 +57,23 @@ import {
 } from "./components/PlatformInstallerAndSetup";
 import {
   CURRENT_POLICY_VERSION,
-  addLocalDepartment,
-  approveUserAccount,
   downloadCsv,
-  ensureFirstAccountAndInvites,
   exportSystemBackupJson,
-  getAttachmentByName,
-  getAttachmentByPasscodeId,
   getCsrfToken,
-  getEffectiveDepartmentId,
-  getEffectiveRole,
-  getMergedAuditLedger,
-  getMergedDepartments,
-  getMergedPasscodes,
-  getMergedUserDirectory,
   hasUserAcceptedPolicy,
-  inviteUserAccount,
   isNotificationForHostUser,
   isNotificationSoundMuted,
-  isPrimaryBootstrapAdmin,
-  isProfileApproved,
   isVisitNotification,
-  issueLocalPasscode,
   markAllLocalNotificationsRead,
   optimizeImageFileToDataUrl,
   playNotificationDingDong,
   recordPolicyAcceptance,
   recordPolicyDeclineAttempt,
-  registerIssuedPasscode,
-  registerSignUpAccount,
-  removeLocalDepartment,
-  removeRegisteredUser,
   removeSystemImage,
-  removeUserInvite,
   restoreSystemBackupJson,
-  revokeLocalPasscode,
-  revokeUserApproval,
   sanitizeText,
   setCsrfToken,
   setNotificationSoundMuted,
-  setUserDepartmentOverride,
-  setUserRoleOverride,
   updateSystemConfig,
   useGateRegistry,
   verifyCsrfToken,
@@ -106,11 +82,6 @@ import {
   type SystemConfig,
 } from "./lib/gateRegistry";
 
-// Strict RBAC Tab Matrix:
-// - "admin": Full system access, ONLY role permitted to view "Audit log" (System Logs)
-// - "security": Gate operations, all-department logs, and CSV/Print exports
-// - "report" (Department Head): Scoped strictly to their bound department's Dashboard, Passcodes, and Persons on site
-// - "staff": Scoped strictly to their individual passcodes within their bound department
 const TABS: Record<string, string[]> = {
   Dashboard: ["admin", "security", "report"],
   Passcodes: ["admin", "security", "report", "staff"],
@@ -204,22 +175,14 @@ function resolveWorkspaceBackgroundUrl(cfg: SystemConfig): string | null {
   return CORPORATE_FACILITY_BG;
 }
 
-/* ==================== HOMEPAGE / LOGIN PAGE ==================== */
 function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { signIn } = useAuthActions();
   const brand = useBranding();
-  const remoteDepts = useQuery(api.departments.list) ?? [];
   const registry = useGateRegistry();
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
 
   const [step, setStep] = useState<"signIn" | "signUp" | "forgot" | { verify: string } | { reset: string }>("signIn");
   const [emailInput, setEmailInput] = useState("");
   const [nameInput, setNameInput] = useState("");
-  const [signupDeptId, setSignupDeptId] = useState<string>("");
-  const [inviteCodeInput, setInviteCodeInput] = useState("");
   const [policyAccepted, setPolicyAccepted] = useState(true);
   const [policyModalOpen, setPolicyModalOpen] = useState(false);
   const [err, setErr] = useState("");
@@ -227,38 +190,18 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [rateLimitWarning, setRateLimitWarning] = useState<string>("");
+  const [signupAccountExists, setSignupAccountExists] = useState(false);
   const preAuthCheck = useMutation(api.authWrapper.preAuthCheck);
 
   useEffect(() => {
     applySafeAccent(brand?.accent, theme);
   }, [brand?.accent, theme]);
 
-  // Automatically pre-fill invited user details when a matching email or invite code is entered
-  const matchedInvite = useMemo(() => {
-    const cleanEmail = emailInput.trim().toLowerCase();
-    if (cleanEmail && registry.invitedUsers[cleanEmail]) {
-      return registry.invitedUsers[cleanEmail];
-    }
-    const cleanCode = inviteCodeInput.trim().toUpperCase();
-    if (cleanCode) {
-      return Object.values(registry.invitedUsers).find(
-        inv => inv.inviteCode.toUpperCase() === cleanCode
-      );
-    }
-    return undefined;
-  }, [emailInput, inviteCodeInput, registry.invitedUsers]);
-
-  useEffect(() => {
-    if (matchedInvite) {
-      if (!nameInput) setNameInput(matchedInvite.name);
-      if (matchedInvite.departmentId) setSignupDeptId(matchedInvite.departmentId);
-    }
-  }, [matchedInvite]);
-
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setErr("");
     setInfo("");
+    setSignupAccountExists(false);
     if (!verifyCsrfToken(getCsrfToken())) {
       setErr("Invalid session security token. Refresh and try again.");
       return;
@@ -310,19 +253,14 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         authAction = "signIn";
       }
 
-      let preAuthResult: { allowed: boolean; error?: string; retryAfter?: number } = { allowed: true };
-      try {
-        preAuthResult = await preAuthCheck({
-          email,
-          password,
-          action: authAction,
-        });
-      } catch {
-        // Fallback if remote Convex deployment has not yet pushed authWrapper:preAuthCheck
-        preAuthResult = { allowed: true };
-      }
+      const preAuthResult = await preAuthCheck({
+        email,
+        password,
+        action: authAction,
+      });
 
       if (!preAuthResult.allowed) {
+        setSignupAccountExists(preAuthResult.accountExists === true);
         if (preAuthResult.retryAfter) {
           setRateLimitWarning(`Rate limit reached for ${email}. Try again in ${preAuthResult.retryAfter}s.`);
         }
@@ -340,11 +278,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
             name: rawName || email.split("@")[0],
             context: step === "signUp" ? "signup" : "pre_login",
           });
-        } catch (e) {
-          console.error("Failed to record policy acceptance:", e);
+        } catch {
         }
-
-        const chosenDeptId = signupDeptId || matchedInvite?.departmentId || depts[0]?._id;
 
         if (step === "signUp") {
           fd.set("name", rawName);
@@ -354,19 +289,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         fd.set("flow", step);
 
         const r = await signIn("password", fd);
-        if (step === "signUp") {
-          // Only register signup account AFTER Convex auth succeeds; role is determined strictly by invite or defaults to "staff"
-          try {
-            registerSignUpAccount({
-              email,
-              name: rawName,
-              inviteCode: inviteCodeInput.trim() || matchedInvite?.inviteCode,
-              departmentId: chosenDeptId,
-            });
-          } catch (e) {
-            console.error("Failed to register signup account:", e);
-          }
-        }
         if (!r.signingIn) {
           setStep({ verify: email });
           setInfo("Verification code sent to your email.");
@@ -376,24 +298,36 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
         setStep({ reset: email });
         setInfo("Reset code sent to your email.");
       } else if ("verify" in step) {
-        await signIn("password", {
+        const r = await signIn("password", {
           email: step.verify,
           code: String(fd.get("code")).trim(),
           flow: "email-verification",
         });
+        if (r.signingIn) {
+          setInfo("Verification successful. Signing you in...");
+        } else {
+          setErr("Verification did not start a session. Please sign in with your password or request a new code.");
+        }
       } else {
         // Password reset flow
         const resetEmail = (step as { reset: string }).reset;
-        await signIn("password", {
+        const r = await signIn("password", {
           email: resetEmail,
           code: String(fd.get("code")).trim(),
           newPassword: String(fd.get("newPassword")).trim(),
           flow: "reset-verification",
         });
+        if (r.signingIn) {
+          setInfo("Password reset successfully. Signing you in...");
+        } else {
+          setStep("signIn");
+          setEmailInput(resetEmail);
+          setInfo("Password reset successfully. Sign in with your new password.");
+        }
       }
     } catch (caught: any) {
-      console.error("Authentication error:", caught);
       const msg = String(caught?.message ?? caught ?? "");
+      setSignupAccountExists(false);
       // Generic error messages to prevent email enumeration (2026 best practice)
       if (msg.includes("InvalidAccountId") || msg.toLowerCase().includes("account not found")) {
         setErr("Invalid email or password. Please try again.");
@@ -402,7 +336,8 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
       } else if (msg.includes("TooManyFailedAttempts")) {
         setErr("Too many failed attempts. Please wait a few minutes and try again.");
       } else if (msg.toLowerCase().includes("already exists") || msg.includes("AccountAlreadyExists")) {
-        setErr("An account with this email already exists. Please sign in instead.");
+        setSignupAccountExists(step === "signUp");
+        setErr("An account with this email already exists. Sign in, or reset your password if you forgot it.");
       } else {
         setErr(
           step === "signIn"
@@ -434,14 +369,14 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
           type="button"
           onClick={onToggleTheme}
           aria-label="Toggle color theme"
-          style={{ background: "rgba(15,23,42,0.75)", color: "#f8fafc", borderColor: "rgba(255,255,255,0.2)" }}
+          style={{ background: "rgba(72, 23, 17, 0.9)", color: "#fff4da", borderColor: "rgba(230, 193, 123, 0.65)" }}
         >
           {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
           <span>{theme === "dark" ? "Light" : "Dark"}</span>
         </button>
       </div>
 
-      {/* CENTER PORTAL: Left pane filled by Organization Logo on Desktop (Top Logo zone on Mobile), Right pane has centered TFSECURE Login Form */}
+      {/* CENTER PORTAL: Left pane filled by Organization Logo on Desktop (Top Logo zone on Mobile), Right pane has centered Jusclick Login Form */}
       <div className="auth-main-stage">
         <div className="auth-portal-frame">
           <aside className="auth-checkpoint-panel">
@@ -456,7 +391,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                 <div className="system-title-group" style={{ flexDirection: "row", gap: 8 }}>
                   <TfLogo size="icon" />
                   <span className="header-app-title" style={{ fontSize: 20 }}>
-                    TFSECURE
+                    Jusclick-TeQiQ
                   </span>
                 </div>
               </div>
@@ -485,6 +420,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                       setStep("signIn");
                       setErr("");
                       setInfo("");
+                      setSignupAccountExists(false);
                     }}
                   >
                     Sign in
@@ -497,6 +433,7 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                       setStep("signUp");
                       setErr("");
                       setInfo("");
+                      setSignupAccountExists(false);
                     }}
                   >
                     Create account
@@ -531,43 +468,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                     placeholder="Email address"
                     required
                     autoComplete="email"
-                  />
-                </div>
-              )}
-
-              {step === "signUp" && (
-                <div className="field-group">
-                  <label htmlFor="auth-dept">Department</label>
-                  <select
-                    id="auth-dept"
-                    value={signupDeptId || matchedInvite?.departmentId || depts[0]?._id || ""}
-                    onChange={e => setSignupDeptId(e.target.value)}
-                    disabled={Boolean(matchedInvite?.departmentId)}
-                  >
-                    {depts.map(d => (
-                      <option key={d._id} value={d._id}>
-                        {d.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {step === "signUp" && matchedInvite && (
-                <div className="gate-banner granted" style={{ marginTop: 0, padding: "7px 10px", fontSize: 12 }}>
-                  Invitation matched: pre-assigned role <strong>{formatRoleLabel(matchedInvite.role)}</strong>
-                </div>
-              )}
-
-              {step === "signUp" && Object.keys(registry.invitedUsers).length > 0 && (
-                <div className="field-group">
-                  <label htmlFor="auth-invite">Invite Token (Optional)</label>
-                  <input
-                    id="auth-invite"
-                    className="mono"
-                    value={inviteCodeInput}
-                    onChange={e => setInviteCodeInput(e.target.value)}
-                    placeholder="e.g. TFC-INV-123456"
                   />
                 </div>
               )}
@@ -704,6 +604,37 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
                 </div>
               )}
 
+              {signupAccountExists && step === "signUp" && (
+                <div style={{ display: "flex", justifyContent: "flex-start", gap: 12 }}>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    style={{ padding: "2px 4px", minHeight: "auto", fontSize: 12 }}
+                    onClick={() => {
+                      setStep("signIn");
+                      setErr("");
+                      setInfo("");
+                      setSignupAccountExists(false);
+                    }}
+                  >
+                    Go to sign in
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    style={{ padding: "2px 4px", minHeight: "auto", fontSize: 12 }}
+                    onClick={() => {
+                      setStep("forgot");
+                      setErr("");
+                      setInfo("");
+                      setSignupAccountExists(false);
+                    }}
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              )}
+
               <button className="pri" type="submit" disabled={busy} style={{ width: "100%", height: 40 }}>
                 {busy
                   ? "Please wait…"
@@ -771,7 +702,6 @@ function SignIn({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThe
   );
 }
 
-/* ==================== MODULE 1: DASHBOARD ==================== */
 function Dashboard({
   onNavigate,
   role,
@@ -796,27 +726,16 @@ function Dashboard({
 
   const [now, setNow] = useState(() => Date.now());
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState("");
 
-  const rawPasscodes = useMemo(
-    () => getMergedPasscodes(remotePasscodes as any),
-    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
-  const users = useMemo(
-    () => getMergedUserDirectory(remoteUsers as any, me as any),
-    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
-  );
+  const rawPasscodes = remotePasscodes;
+  const depts = remoteDepts;
+  const users = remoteUsers;
 
   const isAllDepts = role === "admin" || role === "security";
   const isAdmin = role === "admin";
 
-  const mergedAuditRows = useMemo(
-    () => (isAdmin ? getMergedAuditLedger(auditRows, rawPasscodes) : []),
-    [isAdmin, auditRows, rawPasscodes, registry]
-  );
+  const mergedAuditRows = isAdmin ? auditRows : [];
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15_000);
@@ -843,7 +762,7 @@ function Dashboard({
   });
 
   const activePasscodes = passcodes.filter(
-    p => !p.revokedAt && !registry.deniedPasscodeIds[p._id] && !p.usedAt && p.expiresAt > now
+    p => !p.revokedAt && !p.usedAt && !p.checkedInAt && p.expiresAt > now
   );
 
   const dayAgo = now - 86_400_000;
@@ -901,8 +820,7 @@ function Dashboard({
 
   const resolveHostName = (p: any) => {
     if (p.hostName) return p.hostName;
-    const att = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
-    if (att?.hostName) return att.hostName;
+    if (p.hostName) return p.hostName;
     if (me && p.issuedBy === me.userId) return me.name;
     const u = users.find(x => x.userId === p.issuedBy);
     return u?.name ?? "Staff Host";
@@ -918,7 +836,7 @@ function Dashboard({
     return { _id: d._id, name: d.name, active, onSite, checkedOut, total };
   });
 
-  const pendingUserCount = isAdmin ? users.filter(u => !isProfileApproved(u)).length : 0;
+  const pendingUserCount = isAdmin ? users.filter(u => u.active !== true).length : 0;
 
   // Live Production Analytics calculations for System Admin
   const totalSessions = activeOnSite.length + checkedOutHistory.length;
@@ -1086,6 +1004,7 @@ function Dashboard({
               View All
             </button>
           </div>
+          {revokeError && <p className="status-err" role="alert">{revokeError}</p>}
           <div className="table-wrap">
             <table>
               <thead>
@@ -1123,24 +1042,17 @@ function Dashboard({
                                 className="danger-btn"
                                 style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                                 onClick={async () => {
-                                  if (!verifyCsrfToken(getCsrfToken())) return;
-                                  const actor = {
-                                    userId: me.userId,
-                                    name: me.name,
-                                    role: role as RoleType,
-                                    departmentId: boundDeptId,
-                                  };
-                                  if (String(p._id).startsWith("pc_")) {
-                                    revokeLocalPasscode(String(p._id), actor, p);
-                                  } else {
-                                    try {
-                                      const r = await revoke({ id: p._id as Id<"passcodes"> });
-                                      if (!r.ok) revokeLocalPasscode(String(p._id), actor, p);
-                                    } catch {
-                                      revokeLocalPasscode(String(p._id), actor, p);
+                                  setRevokeError("");
+                                  try {
+                                    const result = await revoke({ id: p._id as Id<"passcodes"> });
+                                    if (!result.ok) {
+                                      setRevokeError(result.error ?? "Could not revoke passcode.");
+                                      return;
                                     }
+                                    setConfirmRevokeId(null);
+                                  } catch {
+                                    setRevokeError("Could not revoke passcode. Please retry.");
                                   }
-                                  setConfirmRevokeId(null);
                                 }}
                               >
                                 Confirm
@@ -1285,7 +1197,6 @@ function Dashboard({
   );
 }
 
-/* ==================== MODULE 2: PASSCODES ==================== */
 type IssuedTicket = {
   code: string;
   visitorName: string;
@@ -1318,20 +1229,10 @@ function Passcodes({
   const brand = useBranding();
   const issue = useMutation(api.passcodes.issue);
   const revoke = useMutation(api.passcodes.revoke);
-  const registry = useGateRegistry();
 
-  const rows = useMemo(
-    () => getMergedPasscodes(remoteRows as any),
-    [remoteRows, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
-  const users = useMemo(
-    () => getMergedUserDirectory(remoteUsers as any, me as any),
-    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
-  );
+  const rows = remoteRows;
+  const depts = remoteDepts;
+  const users = remoteUsers;
 
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [f, setF] = useState({
@@ -1374,8 +1275,6 @@ function Passcodes({
 
   const resolveHostName = (p: (typeof rows)[number]) => {
     if ((p as any).hostName) return (p as any).hostName as string;
-    const att = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
-    if (att?.hostName) return att.hostName;
     if (p.issuedBy === me.userId) return me.name;
     const u = users.find(x => x.userId === p.issuedBy);
     return u?.name ?? me.name;
@@ -1383,27 +1282,21 @@ function Passcodes({
 
   const resolveDeptId = (p: (typeof rows)[number]) => {
     if (p.hostDepartmentId) return p.hostDepartmentId;
-    const att = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
-    if (att?.hostDepartmentId) return att.hostDepartmentId;
     if (p.issuedBy === me.userId) return boundDeptId;
     const u = users.find(x => x.userId === p.issuedBy);
-    return u ? getEffectiveDepartmentId(u, boundDeptId) : boundDeptId;
+    return u?.departmentId ?? boundDeptId;
   };
 
   const resolveDeptName = (p: (typeof rows)[number]) => {
     const dId = resolveDeptId(p);
     if (dId) return dn(dId);
-    const att = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
-    return att?.deptName ?? boundDeptName;
+    return boundDeptName;
   };
 
   const getStatus = (p: (typeof rows)[number]) => {
-    if (p.revokedAt || registry.deniedPasscodeIds[p._id]) return "Revoked";
-    if (p.usedAt || (p as any).checkedInAt) {
-      const isCheckedOut =
-        !!(p as any).checkedOutAt ||
-        !!registry.checkedOutPasscodeIds[p._id] ||
-        registry.onSiteRecords.some(r => r.passcodeId === p._id && !!r.checkedOutAt);
+    if (p.revokedAt) return "Revoked";
+    if (p.usedAt || p.checkedInAt) {
+      const isCheckedOut = !!p.checkedOutAt;
       return isCheckedOut ? "Checked Out" : "On Site";
     }
     if (p.expiresAt < now) return "Expired";
@@ -1430,10 +1323,6 @@ function Passcodes({
 
     setBusy(true);
     try {
-      const serverDeptId =
-        boundDeptId && !String(boundDeptId).startsWith("dept_")
-          ? (boundDeptId as Id<"departments">)
-          : undefined;
       let r: { ok: true; code: string; passcodeId?: string } | { ok: false; error: string };
       try {
         r = await issue({
@@ -1441,29 +1330,14 @@ function Passcodes({
           kind: f.kind,
           hours,
           company: cleanCompany,
-          hostDepartmentId: serverDeptId,
+          phone: cleanPhone,
+          idNumber: cleanIdNum,
+          vehiclePlate: cleanPlate,
+          purpose: cleanPurpose,
         });
-        if (!r.ok && r.error?.includes("Not permitted")) {
-          r = await issueLocalPasscode({
-            visitorName: cleanName,
-            kind: f.kind,
-            hours,
-            company: cleanCompany,
-            hostDepartmentId: boundDeptId,
-            hostName: me.name,
-            issuedBy: me.userId,
-          });
-        }
       } catch {
-        r = await issueLocalPasscode({
-          visitorName: cleanName,
-          kind: f.kind,
-          hours,
-          company: cleanCompany,
-          hostDepartmentId: boundDeptId,
-          hostName: me.name,
-          issuedBy: me.userId,
-        });
+        setErrMsg("Could not reach the server to issue a passcode. Please retry.");
+        return;
       }
 
       if (!r.ok) {
@@ -1471,23 +1345,6 @@ function Passcodes({
       } else {
         const issuedAt = Date.now();
         const expiresAt = issuedAt + hours * 3600_000;
-        await registerIssuedPasscode(r.code, {
-          passcodeId: (r as any).passcodeId,
-          visitorName: cleanName,
-          company: cleanCompany,
-          kind: f.kind,
-          issuedByUserId: me.userId,
-          hostName: me.name,
-          hostDepartmentId: boundDeptId,
-          deptName: boundDeptName,
-          phone: cleanPhone,
-          idNumber: cleanIdNum,
-          vehiclePlate: cleanPlate,
-          purpose: cleanPurpose,
-          hours,
-          issuedAt,
-          expiresAt,
-        });
         setIssuedTickets([
           {
             code: r.code,
@@ -1526,10 +1383,6 @@ function Passcodes({
     setBusy(true);
     const created: IssuedTicket[] = [];
     try {
-      const serverDeptId =
-        boundDeptId && !String(boundDeptId).startsWith("dept_")
-          ? (boundDeptId as Id<"departments">)
-          : undefined;
       for (const line of lines.slice(0, 20)) {
         const [rawName, rawCompany, rawPhone] = line.split(",").map(s => sanitizeText(s, 80));
         if (rawName.length < 2) continue;
@@ -1544,49 +1397,19 @@ function Passcodes({
             kind: f.kind,
             hours,
             company: cleanCompany,
-            hostDepartmentId: serverDeptId,
+            phone: cleanPhone,
+            purpose: cleanPurpose,
+            idNumber: sanitizeText(f.idNumber, 40) || undefined,
+            vehiclePlate: sanitizeText(f.vehiclePlate, 24).toUpperCase() || undefined,
           });
-          if (!r.ok && r.error?.includes("Not permitted")) {
-            r = await issueLocalPasscode({
-              visitorName: rawName,
-              kind: f.kind,
-              hours,
-              company: cleanCompany,
-              hostDepartmentId: boundDeptId,
-              hostName: me.name,
-              issuedBy: me.userId,
-            });
-          }
         } catch {
-          r = await issueLocalPasscode({
-            visitorName: rawName,
-            kind: f.kind,
-            hours,
-            company: cleanCompany,
-            hostDepartmentId: boundDeptId,
-            hostName: me.name,
-            issuedBy: me.userId,
-          });
+          setErrMsg(`Could not issue a passcode for ${rawName}. Check your connection and retry.`);
+          break;
         }
 
         if (r.ok) {
           const issuedAt = Date.now();
           const expiresAt = issuedAt + hours * 3600_000;
-          await registerIssuedPasscode(r.code, {
-            passcodeId: (r as any).passcodeId,
-            visitorName: rawName,
-            company: cleanCompany,
-            kind: f.kind,
-            issuedByUserId: me.userId,
-            hostName: me.name,
-            hostDepartmentId: boundDeptId,
-            deptName: boundDeptName,
-            phone: cleanPhone,
-            purpose: cleanPurpose,
-            hours,
-            issuedAt,
-            expiresAt,
-          });
           created.push({
             code: r.code,
             visitorName: rawName,
@@ -1644,7 +1467,7 @@ function Passcodes({
       }
       return true;
     });
-  }, [rows, role, me.userId, boundDeptId, boundDeptName, canSeeAllDepts, statusFilter, kindFilter, deptFilter, search, now, registry, users]);
+  }, [rows, role, me.userId, boundDeptId, boundDeptName, canSeeAllDepts, statusFilter, kindFilter, deptFilter, search, now, users]);
 
   const copyText = (text: string, id: string) => {
     navigator.clipboard?.writeText(text);
@@ -1653,24 +1476,12 @@ function Passcodes({
   };
 
   const resolveCheckoutInfo = (p: (typeof rows)[number]) => {
-    if ((p as any).checkedOutAt) {
-      return {
-        checkedOutAt: (p as any).checkedOutAt,
-        checkedOutBy: (p as any).checkedOutBy ?? "Gate Security",
-        checkoutNotes: (p as any).checkoutNotes,
-      };
-    }
-    const direct = registry.checkedOutPasscodeIds[p._id];
-    if (direct) return direct;
-    const rec = registry.onSiteRecords.find(r => r.passcodeId === p._id && !!r.checkedOutAt);
-    if (rec && rec.checkedOutAt) {
-      return {
-        checkedOutAt: rec.checkedOutAt,
-        checkedOutBy: rec.checkedOutBy ?? "Gate Security",
-        checkoutNotes: rec.checkoutNotes,
-      };
-    }
-    return undefined;
+    if (!p.checkedOutAt) return undefined;
+    return {
+      checkedOutAt: p.checkedOutAt,
+      checkedOutBy: p.checkedOutBy ?? "Gate Security",
+      checkoutNotes: p.checkoutNotes,
+    };
   };
 
   const exportPasscodesCsv = () => {
@@ -2050,26 +1861,11 @@ function Passcodes({
                               className="danger-btn"
                               style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                               onClick={async () => {
-                                if (!verifyCsrfToken(getCsrfToken())) return;
-                                const actor = {
-                                  userId: me.userId,
-                                  name: me.name,
-                                  role: role as RoleType,
-                                  departmentId: boundDeptId,
-                                };
-                                if (String(p._id).startsWith("pc_")) {
-                                  const res = revokeLocalPasscode(String(p._id), actor, p);
-                                  if (!res.ok) setErrMsg(res.error ?? "Could not revoke");
-                                } else {
-                                  try {
-                                    const r: Res = await revoke({ id: p._id as Id<"passcodes"> });
-                                    if (!r.ok) {
-                                      const res = revokeLocalPasscode(String(p._id), actor, p);
-                                      if (!res.ok) setErrMsg(r.error ?? "Could not revoke");
-                                    }
-                                  } catch {
-                                    revokeLocalPasscode(String(p._id), actor, p);
-                                  }
+                                try {
+                                  const r: Res = await revoke({ id: p._id as Id<"passcodes"> });
+                                  if (!r.ok) setErrMsg(r.error ?? "Could not revoke");
+                                } catch {
+                                  setErrMsg("Could not revoke passcode. Please retry.");
                                 }
                                 setConfirmRevokeId(null);
                               }}
@@ -2109,24 +1905,12 @@ function Passcodes({
   );
 }
 
-/* ==================== MODULE 4: AUDIT LOG (ADMIN ONLY) ==================== */
 function Audit({ role }: { role: string }) {
   const serverRows = useQuery(api.audit.recent) ?? [];
-  const remotePasscodes = useQuery(api.passcodes.list) ?? [];
-  const registry = useGateRegistry();
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState<"all" | "allowed" | "denied">("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
-
-  const passcodes = useMemo(
-    () => getMergedPasscodes(remotePasscodes as any),
-    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
-
-  const rows = useMemo(
-    () => getMergedAuditLedger(serverRows, passcodes),
-    [serverRows, passcodes, registry]
-  );
+  const rows = serverRows;
 
   const distinctActions = useMemo(() => {
     const s = new Set<string>();
@@ -2248,7 +2032,6 @@ function Audit({ role }: { role: string }) {
   );
 }
 
-/* ==================== MODULE 5: DEPARTMENTS ==================== */
 const PRESET_DEPARTMENTS = [
   "Cocoa Processing Plant",
   "Quality Assurance Lab",
@@ -2265,20 +2048,9 @@ function Departments() {
   const me = useQuery(api.users.me);
   const add = useMutation(api.departments.add);
   const remove = useMutation(api.departments.remove);
-  const registry = useGateRegistry();
-
-  const rows = useMemo(
-    () => getMergedDepartments(remoteRows as any),
-    [remoteRows, registry.localDepartments, registry.removedDepartmentIds]
-  );
-  const users = useMemo(
-    () => getMergedUserDirectory(remoteUsers as any, me as any, rows[0]?._id),
-    [remoteUsers, me, rows, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
-  );
-  const passcodes = useMemo(
-    () => getMergedPasscodes(remotePasscodes as any),
-    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
+  const rows = remoteRows;
+  const users = remoteUsers;
+  const passcodes = remotePasscodes;
 
   const [name, setName] = useState("");
   const [msg, setMsg] = useState("");
@@ -2288,31 +2060,19 @@ function Departments() {
   const now = Date.now();
 
   const handleAdd = async (deptName: string) => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
     const clean = sanitizeText(deptName, 60);
     if (clean.length < 2) return;
     setMsg("");
     setBusy(true);
     try {
-      let ok = false;
-      try {
-        const r: Res = await add({ name: clean });
-        ok = r.ok;
-        if (!r.ok && r.error?.includes("Not permitted")) {
-          const localRes = addLocalDepartment(clean, me?.name ?? "System Admin");
-          ok = localRes.ok;
-          if (!localRes.ok) setMsg(localRes.error ?? "Failed to add department");
-        } else if (!r.ok) {
-          setMsg(r.error ?? "Failed to add department");
-        }
-      } catch {
-        const localRes = addLocalDepartment(clean, me?.name ?? "System Admin");
-        ok = localRes.ok;
-        if (!localRes.ok) setMsg(localRes.error ?? "Failed to add department");
-      }
-      if (ok) {
+      const result: Res = await add({ name: clean });
+      if (result.ok) {
         setName("");
+      } else {
+        setMsg(result.error ?? "Failed to add department");
       }
+    } catch {
+      setMsg("Could not add the department. Please retry.");
     } finally {
       setBusy(false);
     }
@@ -2359,18 +2119,13 @@ function Departments() {
                               className="danger-btn"
                               style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
                               onClick={async () => {
-                                if (!verifyCsrfToken(getCsrfToken())) return;
-                                if (String(d._id).startsWith("dept_")) {
-                                  removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
-                                } else {
-                                  try {
-                                    const r: Res = await remove({ id: d._id as Id<"departments"> });
-                                    if (!r.ok) {
-                                      removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
-                                    }
-                                  } catch {
-                                    removeLocalDepartment(String(d._id), d.name, me?.name ?? "System Admin");
+                                try {
+                                  const r: Res = await remove({ id: d._id as Id<"departments"> });
+                                  if (!r.ok) {
+                                    setMsg(r.error ?? "Could not remove department.");
                                   }
+                                } catch {
+                                  setMsg("Could not remove department. Please retry.");
                                 }
                                 setConfirmRemoveId(null);
                               }}
@@ -2463,30 +2218,29 @@ function Departments() {
   );
 }
 
-/* ==================== MODULE 6: USERS, ADMIN INVITATIONS & APPROVAL ==================== */
 function Users({
   me,
 }: {
-  me: { _id: string; userId: string; name: string; email: string; role: string; departmentId?: string };
+  me: { _id: string; userId: string; name: string; email: string; role: string; active?: boolean; departmentId?: string; isPrimaryAdmin?: boolean };
 }) {
   const serverRows = useQuery(api.users.list) ?? [];
+  const serverInvitations = useQuery(api.users.invitations) ?? [];
   const remoteDepts = useQuery(api.departments.list) ?? [];
   const setRole = useMutation(api.users.setRole);
   const setActive = useMutation(api.users.setActive);
   const setDept = useMutation(api.users.setDepartment);
+  const createInvitation = useMutation(api.users.createInvitation);
+  const revokeInvitation = useMutation(api.users.revokeInvitation);
+  const generateCsrf = useAction(api.csrf.generateToken);
   const clearRateLimit = useMutation(api.security.clearRateLimit);
-  const registry = useGateRegistry();
-
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
+  const depts = remoteDepts;
 
   const [msg, setMsg] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
+  const [inviteTokens, setInviteTokens] = useState<Record<string, string>>({});
 
   // Invite / Pre-register Admin / User form state
   const [inviteName, setInviteName] = useState("");
@@ -2494,82 +2248,60 @@ function Users({
   const [inviteRole, setInviteRole] = useState<RoleType>("staff");
   const [inviteDeptId, setInviteDeptId] = useState<string>("");
 
-  // Unified directory combining server profiles, locally authenticated profiles, and pre-registered/invited users
-  const rows = useMemo(
-    () => getMergedUserDirectory(serverRows as any, me as any, depts[0]?._id),
-    [
-      serverRows,
-      me,
-      depts,
-      registry.registeredProfiles,
-      registry.invitedUsers,
-      registry.userRoleOverrides,
-      registry.userDepartmentOverrides,
-      registry.approvedUserKeys,
-      registry.pendingApprovalEmails,
-    ]
-  );
-
-  const invitesList = useMemo(
-    () => Object.values(registry.invitedUsers).sort((a, b) => b.invitedAt - a.invitedAt),
-    [registry.invitedUsers]
-  );
-
-  const isLocalId = (id: string) =>
-    id.startsWith("invited_") || id.startsWith("signup_") || id.startsWith("bootstrap_") || id.startsWith("dept_");
+  const rows = serverRows;
+  const invitesList = serverInvitations;
 
   const handleRoleChange = async (u: (typeof rows)[number], nextRole: RoleType) => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
     setMsg("");
     setInfoMsg("");
-    setUserRoleOverride(u._id, nextRole, me.name, u.email);
-    if (!isLocalId(u._id)) {
-      try {
-        const r = await setRole({ profileId: u._id as Id<"profiles">, role: nextRole });
-        if (!r.ok && !r.error?.includes("Not permitted") && !r.error?.includes("own account")) {
-          setMsg(r.error ?? "");
-        }
-      } catch {
-        // Local RBAC registry already persisted the role assignment
+    try {
+      const csrfToken = await generateCsrf();
+      const result = await setRole({ profileId: u._id, role: nextRole, csrfToken });
+      if (!result.ok) {
+        setMsg(result.error ?? "Role update was rejected.");
+        return;
       }
+      setInfoMsg(`Assigned role "${formatRoleLabel(nextRole)}" to ${u.name} (${u.email}).`);
+    } catch {
+      setMsg("Could not update the role. Please retry.");
     }
-    setInfoMsg(`Assigned role "${formatRoleLabel(nextRole)}" to ${u.name} (${u.email}).`);
   };
 
   const handleSetDept = async (u: (typeof rows)[number], deptIdStr: string) => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
     setMsg("");
     setInfoMsg("");
-    setUserDepartmentOverride(u._id, deptIdStr || undefined, u.email, me.name);
-    if (!isLocalId(u._id) && (!deptIdStr || !isLocalId(deptIdStr))) {
-      try {
-        await setDept({
-          profileId: u._id as Id<"profiles">,
-          departmentId: (deptIdStr || undefined) as Id<"departments"> | undefined,
-        });
-      } catch {
-        // Local department binding already persisted
+    try {
+      const csrfToken = await generateCsrf();
+      const result = await setDept({
+        profileId: u._id,
+        departmentId: (deptIdStr || undefined) as Id<"departments"> | undefined,
+        csrfToken,
+      });
+      if (!result.ok) {
+        setMsg(result.error ?? "Department update was rejected.");
+        return;
       }
+    } catch {
+      setMsg("Could not update the department. Please retry.");
+      return;
     }
     const chosenDeptName = depts.find(d => d._id === deptIdStr)?.name ?? "General";
     setInfoMsg(`Bound ${u.name} (${u.email}) to department "${chosenDeptName}".`);
   };
 
   const handleToggleApproval = async (u: (typeof rows)[number], approve: boolean) => {
-    if (!verifyCsrfToken(getCsrfToken())) return;
     setMsg("");
     setInfoMsg("");
-    if (approve) {
-      approveUserAccount(u._id, u.email, me.name);
-    } else {
-      revokeUserApproval(u._id, u.email, me.name);
-    }
-    if (!isLocalId(u._id)) {
-      try {
-        await setActive({ profileId: u._id as Id<"profiles">, active: approve });
-      } catch {
-        // Local approval state already persisted
+    try {
+      const csrfToken = await generateCsrf();
+      const result = await setActive({ profileId: u._id, active: approve, csrfToken });
+      if (!result.ok) {
+        setMsg(result.error ?? "Account status update was rejected.");
+        return;
       }
+    } catch {
+      setMsg("Could not update account approval. Please retry.");
+      return;
     }
     setInfoMsg(
       approve
@@ -2578,11 +2310,10 @@ function Users({
     );
   };
 
-  const handleSendInvite = (e: React.FormEvent) => {
+  const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg("");
     setInfoMsg("");
-    if (!verifyCsrfToken(getCsrfToken())) return;
     const cleanEmail = sanitizeText(inviteEmail, 120).toLowerCase();
     const cleanName = sanitizeText(inviteName, 80);
     if (!cleanEmail || !cleanEmail.includes("@")) {
@@ -2594,34 +2325,40 @@ function Users({
       return;
     }
     const chosenDept = inviteDeptId || depts[0]?._id;
-    const rec = inviteUserAccount({
-      email: cleanEmail,
-      name: cleanName,
-      role: inviteRole,
-      departmentId: chosenDept,
-      invitedBy: me.name,
-    });
-
-    // If a profile with this email already exists in rows, also apply their role & department immediately
-    const existingProfile = rows.find(u => u.email.toLowerCase() === cleanEmail);
-    if (existingProfile) {
-      approveUserAccount(existingProfile._id, cleanEmail, me.name);
-      setUserRoleOverride(existingProfile._id, inviteRole, me.name, cleanEmail);
-      if (chosenDept) {
-        setUserDepartmentOverride(existingProfile._id, chosenDept, cleanEmail, me.name);
+    try {
+      const csrfToken = await generateCsrf();
+      const result = await createInvitation({
+        email: cleanEmail,
+        name: cleanName,
+        role: inviteRole,
+        departmentId: chosenDept as Id<"departments"> | undefined,
+        csrfToken,
+      });
+      if (!result.ok) {
+        setMsg(result.error ?? "Invitation was rejected.");
+        return;
       }
-    }
 
-    setInviteName("");
-    setInviteEmail("");
-    const deptLabel = depts.find(d => d._id === chosenDept)?.name ?? "HSE & Security";
-    setInfoMsg(
-      `Registered & invited ${rec.name} (${rec.email}) as ${formatRoleLabel(rec.role)} in ${deptLabel} · Token: ${rec.inviteCode}.`
-    );
+      if (result.inviteCode) {
+        setInviteTokens(current => ({ ...current, [cleanEmail]: result.inviteCode }));
+      }
+      setInviteName("");
+      setInviteEmail("");
+      const deptLabel = depts.find(d => d._id === chosenDept)?.name ?? "HSE & Security";
+      setInfoMsg(
+        result.inviteCode
+          ? `Invited ${cleanName} (${cleanEmail}) as ${formatRoleLabel(inviteRole)} in ${deptLabel}. Token: ${result.inviteCode}`
+          : `Updated existing account ${cleanName} (${cleanEmail}) as ${formatRoleLabel(inviteRole)} in ${deptLabel}.`
+      );
+    } catch {
+      setMsg("Could not create the invitation. Please retry.");
+    }
   };
 
   const copyInviteToken = (inv: (typeof invitesList)[number]) => {
-    const shareText = `TFsecure Invitation — ${inv.name} (${inv.email}) | Role: ${formatRoleLabel(inv.role)} | Invite Token: ${inv.inviteCode} | URL: ${window.location.origin}`;
+    const inviteCode = inviteTokens[inv.email];
+    if (!inviteCode) return;
+    const shareText = `Jusclick-TeQiQ Invitation — ${inv.name} (${inv.email}) | Role: ${formatRoleLabel(inv.role)} | Invite Token: ${inviteCode} | URL: ${window.location.origin}`;
     navigator.clipboard?.writeText(shareText);
     setCopiedInvite(inv.email);
     setTimeout(() => setCopiedInvite(null), 2000);
@@ -2629,7 +2366,7 @@ function Users({
 
   const filtered = useMemo(() => {
     return rows.filter(u => {
-      if (roleFilter === "pending" && isProfileApproved(u)) return false;
+      if (roleFilter === "pending" && u.active === true) return false;
       if (roleFilter !== "all" && roleFilter !== "pending" && u.role !== roleFilter) return false;
       if (search.trim()) {
         const q = search.trim().toLowerCase();
@@ -2637,43 +2374,15 @@ function Users({
       }
       return true;
     });
-  }, [rows, roleFilter, search, registry]);
+  }, [rows, roleFilter, search]);
 
-  const pendingCount = rows.filter(u => !isProfileApproved(u)).length;
+  const pendingCount = rows.filter(u => u.active !== true).length;
 
   return (
     <>
       <div className="page-header">
         <h1>Users &amp; Role Assignment (RBAC)</h1>
-        <div className="page-header-actions">
-          <label
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 12.5,
-              padding: "5px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--line)",
-              background: "var(--surface-subtle)",
-              cursor: "pointer",
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={registry.systemConfig.requireAdminApproval}
-              onChange={e =>
-                updateSystemConfig(
-                  { requireAdminApproval: e.target.checked },
-                  me.name,
-                  `Set requireAdminApproval to ${e.target.checked}`
-                )
-              }
-              style={{ width: 15, height: 15 }}
-            />
-            <span>Hold uninvited signups for Admin approval</span>
-          </label>
-        </div>
+        <p className="status-mute">Uninvited accounts remain pending until an administrator activates them.</p>
       </div>
 
       {/* INVITE ADMIN / STAFF ACCOUNT PANEL */}
@@ -2764,13 +2473,14 @@ function Users({
                       <td style={{ fontWeight: 600 }}>{inv.name}</td>
                       <td className="mono">{inv.email}</td>
                       <td>{formatRoleLabel(inv.role)}</td>
-                      <td className="mono">{inv.inviteCode}</td>
-                      <td className="mono">{fmt(inv.invitedAt)}</td>
+                      <td className="mono">{inviteTokens[inv.email] ?? "Token shown once"}</td>
+                      <td className="mono">{fmt(inv.createdAt)}</td>
                       <td style={{ textAlign: "right" }}>
                         <span style={{ display: "inline-flex", gap: 6 }}>
                           <button
                             type="button"
                             style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
+                            disabled={!inviteTokens[inv.email]}
                             onClick={() => copyInviteToken(inv)}
                           >
                             {copiedInvite === inv.email ? <Check size={12} /> : <Copy size={12} />}
@@ -2780,7 +2490,19 @@ function Users({
                             type="button"
                             className="danger-btn"
                             style={{ minHeight: 26, padding: "2px 8px", fontSize: 12 }}
-                            onClick={() => removeUserInvite(inv.email, me.name)}
+                            onClick={async () => {
+                              try {
+                                const csrfToken = await generateCsrf();
+                                const result = await revokeInvitation({ invitationId: inv._id, csrfToken });
+                                if (!result.ok) {
+                                  setMsg(result.error ?? "Could not revoke invitation.");
+                                  return;
+                                }
+                                setInfoMsg(`Revoked invitation for ${inv.email}.`);
+                              } catch {
+                                setMsg("Could not revoke invitation. Please retry.");
+                              }
+                            }}
                           >
                             <Trash2 size={12} />
                             <span>Revoke</span>
@@ -2847,19 +2569,15 @@ function Users({
             <tbody>
               {filtered.map(u => {
                 const self = u._id === me._id || u.email.toLowerCase() === me.email.toLowerCase();
-                const approved = isProfileApproved(u);
-                const isBootstrapFirstAdmin = isPrimaryBootstrapAdmin(u);
-                const effectiveDeptId = getEffectiveDepartmentId(u, depts[0]?._id) ?? depts[0]?._id ?? "";
-                const isPreRegistered = isLocalId(u._id);
+                const approved = u.active === true;
+                const isBootstrapFirstAdmin = u.isPrimaryAdmin === true;
+                const effectiveDeptId = u.departmentId ?? depts[0]?._id ?? "";
                 return (
                   <tr key={u._id}>
                     <td>
                       <span style={{ fontWeight: 600 }}>{u.name}</span>
                       {self && <span className="meta-inline"> · You</span>}
                       {isBootstrapFirstAdmin && <span className="meta-inline status-ok"> · Primary System Admin</span>}
-                      {(u as any).inviteCode && (
-                        <div className="meta-inline mono">Invite: {(u as any).inviteCode}</div>
-                      )}
                     </td>
                     <td className="mono">{u.email}</td>
                     <td>
@@ -2892,7 +2610,7 @@ function Users({
                     <td style={{ textAlign: "right" }}>
                       <span style={{ display: "inline-flex", gap: 6 }}>
                         <button
-                          disabled={self && approved}
+                          disabled={isBootstrapFirstAdmin || (self && approved)}
                           className={approved ? "danger-btn" : "pri"}
                           style={{ minHeight: 28, padding: "3px 10px", fontSize: 12 }}
                           onClick={() => handleToggleApproval(u, !approved)}
@@ -2918,19 +2636,6 @@ function Users({
                           <RefreshCw size={12} />
                           <span>Unlock</span>
                         </button>
-                        {!self && isPreRegistered && (
-                          <button
-                            type="button"
-                            style={{ minHeight: 28, padding: "3px 8px", fontSize: 12 }}
-                            title="Remove pre-registered user"
-                            onClick={() => {
-                              removeRegisteredUser(u._id, u.email, me.name);
-                              setInfoMsg(`Removed user record for ${u.email}.`);
-                            }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
                       </span>
                     </td>
                   </tr>
@@ -2944,7 +2649,6 @@ function Users({
   );
 }
 
-/* ==================== MODULE 7: SYSTEM ADMIN CONFIGURATION, MEDIA, ANALYTICS, BACKUP & RESTORE ==================== */
 const ACCENT_PRESETS = [
   { label: "Gold", hex: "#e0a100" },
   { label: "Blue", hex: "#2563eb" },
@@ -2995,7 +2699,7 @@ function Settings({
   useEffect(() => {
     if (s && !f) {
       setF({
-        orgName: s.orgName === "TFsecure" ? "TF Commodities" : s.orgName,
+        orgName: s.orgName === "Jusclick" ? "TF Commodities" : s.orgName,
         accent: s.accent === "#000000" ? "#e0a100" : s.accent,
         defaultHours: s.defaultHours,
         maxHours: s.maxHours,
@@ -3247,7 +2951,7 @@ function Settings({
                 <input
                   value={bannerTitleInput}
                   onChange={e => setBannerTitleInput(e.target.value)}
-                  placeholder="SECURITY • ACCESS CONTROL MANAGEMENT"
+                  placeholder="• ACCESS CONTROL • MANAGEMENT"
                   required
                 />
               </div>
@@ -3885,7 +3589,7 @@ function Settings({
             <div className="panel" style={{ background: "var(--surface-subtle)" }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Restore System from Backup</div>
               <p className="status-mute" style={{ fontSize: 12.5, marginBottom: 12 }}>
-                Select a previously exported TFsecure `.json` backup file to restore all gate records, audit logs,
+                Select a previously exported Jusclick-TeQiQ `.json` backup file to restore all gate records, audit logs,
                 invitations, and system configuration.
               </p>
               <label
@@ -3919,7 +3623,6 @@ function Settings({
   );
 }
 
-/* ==================== NOTIFICATIONS BELL ==================== */
 function Bell() {
   const serverItems = useQuery(api.notifications.mine);
   const me = useQuery(api.users.me);
@@ -3928,7 +3631,7 @@ function Bell() {
   const [open, setOpen] = useState(false);
 
   const soundMuted = isNotificationSoundMuted();
-  const effectiveRole = me ? getEffectiveRole(me) : "staff";
+  const effectiveRole = me?.role ?? "staff";
 
   const items = useMemo(() => {
     if (!me) return [];
@@ -4022,22 +3725,24 @@ function Bell() {
 
   return (
     <div className="bell-wrap">
-      <button
-        type="button"
-        aria-label={`Notifications, ${unread} unread`}
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          if (next && unread > 0) {
-            markAll();
-            markAllLocalNotificationsRead(me ? { ...me, role: effectiveRole } : null);
-          }
-        }}
-      >
-        <BellIcon size={15} />
-        <span>Alerts</span>
-        {unread > 0 && <span className="status-err mono">({unread})</span>}
-      </button>
+      {unread > 0 && (
+        <button
+          type="button"
+          aria-label={`Notifications, ${unread} unread`}
+          onClick={() => {
+            const next = !open;
+            setOpen(next);
+            if (next) {
+              markAll();
+              markAllLocalNotificationsRead(me ? { ...me, role: effectiveRole } : null);
+            }
+          }}
+        >
+          <BellIcon size={15} />
+          <span>Alerts</span>
+          <span className="status-err mono">({unread})</span>
+        </button>
+      )}
 
       {open && (
         <div className="alerts-popover" role="dialog" aria-label="Alerts">
@@ -4091,7 +3796,6 @@ function Bell() {
   );
 }
 
-/* ==================== WORKSPACE SHELL ==================== */
 const TAB_ICONS: Record<string, React.ReactNode> = {
   Dashboard: <LayoutDashboard size={16} />,
   Passcodes: <KeyRound size={16} />,
@@ -4104,20 +3808,40 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   Documentation: <BookOpen size={16} />,
 };
 
+function DigitalClock() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const time = now.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  return (
+    <time className="digital-clock" dateTime={now.toISOString()} aria-label={`Local time ${time}`}>
+      {time}
+    </time>
+  );
+}
+
 function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { signOut } = useAuthActions();
   const me = useQuery(api.users.me);
   const remoteDepts = useQuery(api.departments.list) ?? [];
   const brand = useBranding();
   const ensure = useMutation(api.users.ensureProfile);
+  const claimInvitation = useMutation(api.users.claimInvitation);
   const generateServerCsrf = useAction(api.csrf.generateToken);
   const { activeOnSite } = useUnifiedOnSiteList();
   const registry = useGateRegistry();
 
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as Array<{ _id: string; _creationTime?: number; name: string }>),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
+  const depts = remoteDepts;
 
   const [tab, setTab] = useState(() => {
     try {
@@ -4131,14 +3855,16 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     "theme" | "images" | "setup" | "analytics" | "backup"
   >("theme");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [pendingInviteMessage, setPendingInviteMessage] = useState("");
 
   useEffect(() => {
-    if (me === null) ensure();
+    if (me === null) {
+      ensure().catch(() => undefined);
+    }
   }, [me]);
 
   useEffect(() => {
     if (me) {
-      ensureFirstAccountAndInvites(me);
       generateServerCsrf()
         .then(token => {
           if (token) setCsrfToken(token);
@@ -4163,13 +3889,13 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
     );
   }
 
-  const effectiveRole = getEffectiveRole(me);
-  const boundDeptId = getEffectiveDepartmentId(me, depts[0]?._id) ?? depts[0]?._id;
+  const effectiveRole = me.role;
+  const boundDeptId = me.departmentId ?? depts[0]?._id;
   const boundDeptName = depts.find(d => d._id === boundDeptId)?.name ?? "HSE & Security";
   const meWithEffectiveRole = { ...me, role: effectiveRole, departmentId: boundDeptId };
 
   // Security Control: Block login/access for any new or deactivated user until approved by an Administrator
-  const approved = isProfileApproved(meWithEffectiveRole);
+  const approved = me.active === true;
   const loginBgUrl = resolveLoginBackgroundUrl(registry.systemConfig);
   if (!approved) {
     return (
@@ -4187,7 +3913,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               <div className="auth-card-logo-bar" style={{ gap: 8 }}>
                 <TfLogo size="icon" />
                 <span className="header-app-title" style={{ fontSize: 20 }}>
-                  TFSECURE
+                  Jusclick-TeQiQ
                 </span>
               </div>
               <div className="auth-card-header">
@@ -4196,29 +3922,29 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               <div className="gate-banner pending" style={{ marginTop: 0 }}>
                 <strong>Account Awaiting Approval</strong>
                 <p style={{ marginTop: 4, fontSize: 12.5 }}>
-                  Your profile ({me.email}) is awaiting administrator activation before entering the workspace. If you received an invitation token (e.g. <code>TFC-INV-XXXXXX</code>), enter it below to activate immediately.
+                  Your profile ({me.email}) is awaiting administrator activation. If you have an invitation token, enter it below to claim your assigned access.
                 </p>
               </div>
               <form
-                onSubmit={e => {
+                onSubmit={async e => {
                   e.preventDefault();
                   const fd = new FormData(e.currentTarget);
                   const code = String(fd.get("inviteCode") ?? "").trim().toUpperCase();
-                  const matched = Object.values(registry.invitedUsers).find(
-                    inv =>
-                      inv.email.toLowerCase() === me.email.toLowerCase() ||
-                      (code && inv.inviteCode.toUpperCase() === code)
-                  );
-                  if (matched) {
-                    registerSignUpAccount({
-                      email: me.email,
-                      name: me.name,
-                      inviteCode: matched.inviteCode,
-                      departmentId: matched.departmentId ?? me.departmentId,
-                    });
-                    approveUserAccount(me._id, me.email, "Invitation Token");
-                  } else if (!registry.systemConfig.requireAdminApproval) {
-                    approveUserAccount(me._id, me.email, me.name);
+                  setPendingInviteMessage("");
+                  if (!code) {
+                    setPendingInviteMessage("Enter the invitation token issued by your administrator.");
+                    return;
+                  }
+                  try {
+                    const csrfToken = await generateServerCsrf();
+                    const result = await claimInvitation({ inviteCode: code, csrfToken });
+                    if (!result.ok) {
+                      setPendingInviteMessage(result.error ?? "Invitation could not be claimed.");
+                      return;
+                    }
+                    setPendingInviteMessage("Invitation accepted. Your assigned access is now active.");
+                  } catch {
+                    setPendingInviteMessage("Invitation could not be claimed. Check the token and try again.");
                   }
                 }}
                 style={{ display: "flex", flexDirection: "column", gap: 8 }}
@@ -4226,8 +3952,9 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
                 <input
                   name="inviteCode"
                   className="mono"
-                  placeholder="Optional Invite Token (e.g. TFC-INV-123456)"
+                  placeholder="Invitation token"
                 />
+                {pendingInviteMessage && <p className="status-mute" role="status">{pendingInviteMessage}</p>}
                 <button
                   type="submit"
                   className="pri"
@@ -4266,7 +3993,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               <div className="auth-card-logo-bar" style={{ gap: 8 }}>
                 <TfLogo size="icon" />
                 <span className="header-app-title" style={{ fontSize: 20 }}>
-                  TFSECURE
+                  Jusclick-TeQiQ
                 </span>
               </div>
               <div className="auth-card-header">
@@ -4359,35 +4086,31 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
   };
 
   const workspaceBgUrl = resolveWorkspaceBackgroundUrl(registry.systemConfig);
-  const workspaceOverlayStyle: React.CSSProperties = workspaceBgUrl
+  const workspaceOverlayStyle: React.CSSProperties & {
+    "--workspace-background-image"?: string;
+  } = workspaceBgUrl
     ? {
-        backgroundImage:
-          theme === "dark"
-            ? `linear-gradient(180deg, rgba(11, 15, 25, 0.78) 0%, rgba(11, 15, 25, 0.86) 100%), url("${workspaceBgUrl}")`
-            : `linear-gradient(180deg, rgba(241, 245, 249, 0.80) 0%, rgba(241, 245, 249, 0.88) 100%), url("${workspaceBgUrl}")`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
+        "--workspace-background-image": `url("${workspaceBgUrl}")`,
+        backgroundColor: "#fff8e1",
       }
     : {
-        background: "var(--bg)",
+        backgroundColor: "var(--bg)",
       };
 
   return (
-    <div className="app-layout" style={workspaceOverlayStyle}>
-      <aside className={`sidebar ${mobileNavOpen ? "mobile-open" : ""}`} aria-label="Workspace navigation">
+    <div className="app-layout is-sidebar-collapsed" style={workspaceOverlayStyle}>
+      <aside className={`sidebar is-collapsed ${mobileNavOpen ? "mobile-open" : ""}`} aria-label="Workspace navigation">
         <div>
           {/* SYSTEM LOGO + TITLE IN SIDEBAR */}
           <div className="sidebar-brand">
-            <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
-              <TfLogo size="icon" />
-              <span className="header-app-title">TFSECURE</span>
-            </div>
+            <span className="header-app-title">Jusclick-TeQiQ</span>
             {mobileNavOpen && (
               <button
                 type="button"
                 className="ghost-btn"
                 style={{ minHeight: 28, padding: 4 }}
                 onClick={() => setMobileNavOpen(false)}
+                aria-label="Close navigation"
               >
                 <X size={16} />
               </button>
@@ -4401,6 +4124,8 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
                 type="button"
                 className="sidebar-nav-btn"
                 aria-selected={t === active}
+                aria-label={t}
+                title={t}
                 onClick={() => selectTab(t)}
               >
                 {TAB_ICONS[t]}
@@ -4423,7 +4148,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="sidebar-footer-actions" style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
               onClick={onToggleTheme}
@@ -4442,7 +4167,7 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
       </aside>
 
       <div className="main-column">
-        <header className="topbar">
+        <header className="topbar" aria-label="Access Control Management">
           <div className="topbar-zone-brand">
             <button
               type="button"
@@ -4450,27 +4175,24 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
               onClick={() => setMobileNavOpen(true)}
               aria-label="Open navigation"
             >
-              <Menu size={18} />
+              <DoorOpen size={28} />
             </button>
-            <TfLogo size="sm" />
+            <TfLogo size="lg" />
           </div>
 
           <div className="topbar-zone-center">
-            <span className="topbar-banner-title">
-              {registry.systemConfig.bannerTitle || "SECURITY • ACCESS CONTROL MANAGEMENT"}
+            <span className="topbar-mobile-title">
+              <span>ACCESS CONTROL</span>
+              <span>MANAGEMENT</span>
             </span>
           </div>
 
           <div className="topbar-zone-actions">
             <Bell />
-            <button
-              type="button"
-              onClick={() => signOut()}
-              aria-label="Sign out"
-              title="Sign out"
-            >
-              <LogOut size={15} />
-            </button>
+          </div>
+          <DigitalClock />
+          <div className="topbar-zone-brand topbar-zone-brand-right" aria-hidden="true">
+            <TfLogo size="lg" />
           </div>
         </header>
 
@@ -4527,9 +4249,10 @@ function Shell({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleThem
 
 export default function App() {
   useSystemLogoFaviconSync();
+  const { isAuthenticated, isLoading } = useConvexAuth();
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try {
-      const saved = localStorage.getItem("tfsecure_theme");
+      const saved = localStorage.getItem("Jusclick_theme");
       if (saved === "dark" || saved === "light") return saved;
     } catch {
       // ignore
@@ -4540,7 +4263,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     try {
-      localStorage.setItem("tfsecure_theme", theme);
+      localStorage.setItem("Jusclick_theme", theme);
     } catch {
       // ignore
     }
@@ -4550,12 +4273,13 @@ export default function App() {
 
   return (
     <>
-      <Unauthenticated>
+      {isLoading ? (
+        <div className="app-loading-screen" role="status">Loading...</div>
+      ) : !isAuthenticated ? (
         <SignIn theme={theme} onToggleTheme={toggleTheme} />
-      </Unauthenticated>
-      <Authenticated>
+      ) : (
         <Shell theme={theme} onToggleTheme={toggleTheme} />
-      </Authenticated>
+      )}
     </>
   );
 }

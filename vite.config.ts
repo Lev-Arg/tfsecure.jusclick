@@ -7,7 +7,7 @@ import react from "@vitejs/plugin-react";
 import { z } from "zod";
 
 const isRolldownVite = "rolldownVersion" in vite;
-const SYNC_FILE_PATH = path.resolve(process.cwd(), ".tfsecure-lan-state.json");
+const SYNC_FILE_PATH = path.resolve(process.cwd(), ".Jusclick-lan-state.json");
 
 // Zod schema for validating sync payload (2026 best practice: strict validation)
 const PasscodeSchema = z.object({
@@ -92,7 +92,7 @@ function createLanSyncPlugin(): Plugin {
   }) => {
     middlewares.use((req, res, next) => {
       const url = req.url?.split("?")[0] ?? "";
-      if (url === "/api/tfsecure-sync/stream" && req.method === "GET") {
+      if (url === "/api/Jusclick-sync/stream" && req.method === "GET") {
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache, no-transform",
@@ -107,7 +107,7 @@ function createLanSyncPlugin(): Plugin {
         return;
       }
 
-      if (url === "/api/tfsecure-sync" && req.method === "GET") {
+      if (url === "/api/Jusclick-sync" && req.method === "GET") {
         // Authentication check: verify Convex auth token from Authorization header
         const authHeader = req.headers["authorization"];
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -125,7 +125,7 @@ function createLanSyncPlugin(): Plugin {
         return;
       }
 
-      if (url === "/api/tfsecure-sync" && req.method === "POST") {
+      if (url === "/api/Jusclick-sync" && req.method === "POST") {
         // Authentication check: verify Convex auth token from Authorization header
         const authHeader = req.headers["authorization"];
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -189,7 +189,7 @@ function createLanSyncPlugin(): Plugin {
   };
 
   return {
-    name: "tfsecure-lan-sync",
+    name: "Jusclick-lan-sync",
     configureServer(server) {
       attachMiddleware(server.middlewares);
     },

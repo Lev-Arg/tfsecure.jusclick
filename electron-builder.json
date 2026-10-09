@@ -1,6 +1,6 @@
 {
-  "appId": "com.tfcommodities.tfsecure.desktop",
-  "productName": "TFsecure Gate Access Control",
+  "appId": "com.tfcommodities.Jusclick.desktop",
+  "productName": "Jusclick Gate Access Control",
   "copyright": "Copyright © 2026 Jusclick-TeQiQ / TF Commodities",
   "directories": {
     "output": "release/windows",
@@ -27,7 +27,7 @@
       }
     ],
     "icon": "public/pwa-512x512.png",
-    "artifactName": "TFsecure-Setup-${version}-${arch}.${ext}"
+    "artifactName": "Jusclick-Setup-${version}-${arch}.${ext}"
   },
   "nsis": {
     "oneClick": false,
@@ -35,6 +35,6 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "TFsecure Security Operations"
+    "shortcutName": "Jusclick Security Operations"
   }
 }

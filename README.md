@@ -1,4 +1,4 @@
-# TFsecure
+# Jusclick
 
 React + TypeScript frontend, Convex backend, Convex Auth (email + password).
 Auth -> RBAC -> backend function -> database. The browser is never trusted.
@@ -8,7 +8,7 @@ Auth -> RBAC -> backend function -> database. The browser is never trusted.
     npx convex dev        # log in, create a project; it writes VITE_CONVEX_URL to .env.local
     npx @convex-dev/auth  # one-time: generates JWT keys for Convex Auth
     npx convex env set AUTH_RESEND_KEY re_xxx   # optional in dev, REQUIRED in production (email verification + password reset)
-    npx convex env set AUTH_EMAIL_FROM "TFsecure <no-reply@yourdomain>"
+    npx convex env set AUTH_EMAIL_FROM "Jusclick <no-reply@yourdomain>"
     npm run dev           # in a second terminal (or use: npm run dev)
 
 The first account created becomes Owner/Admin. Later accounts start as "report" (read-only audit)

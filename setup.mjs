@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * TFsecure — Jusclick-TeQiQ Gate Access & Security Operations
+ * Jusclick — Jusclick-TeQiQ Gate Access & Security Operations
  * Interactive One-Time Local Host Setup & Multi-Platform Provisioning Wizard
  *
  * Run with:
@@ -30,7 +30,7 @@ const C = {
 function banner() {
   console.log("");
   console.log(`${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
-  console.log(`${C.bold}  TFsecure — Security Operations & Gate Access Control (Jusclick-TeQiQ v2.5)${C.reset}`);
+  console.log(`${C.bold}  Jusclick — Security Operations & Gate Access Control (Jusclick-TeQiQ v2.5)${C.reset}`);
   console.log(`${C.gold}  Interactive One-Time Local Host Setup & Multi-Platform Installer${C.reset}`);
   console.log(`${C.dim}  Supports Windows Desktop, iOS (Safari / Capacitor), Android (APK / PWA)${C.reset}`);
   console.log(`${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
@@ -147,12 +147,12 @@ async function main() {
     provisionedAt: new Date().toISOString(),
   };
 
-  const configPath = path.resolve(process.cwd(), "tfsecure.host.json");
+  const configPath = path.resolve(process.cwd(), "Jusclick.host.json");
   fs.writeFileSync(configPath, JSON.stringify(setupConfig, null, 2), "utf8");
-  console.log(`  ✓ Saved host manifest: ${C.cyan}tfsecure.host.json${C.reset}`);
+  console.log(`  ✓ Saved host manifest: ${C.cyan}Jusclick.host.json${C.reset}`);
 
   const envLines = [
-    `# TFsecure One-Time Local Host Environment — Generated ${setupConfig.provisionedAt}`,
+    `# Jusclick One-Time Local Host Environment — Generated ${setupConfig.provisionedAt}`,
     `VITE_ORG_NAME="${orgName}"`,
     `VITE_FACILITY_CODE="${facilityCode}"`,
     `VITE_PRIMARY_ADMIN_EMAIL="${adminEmail}"`,
@@ -172,9 +172,9 @@ async function main() {
   if (createLaunchers.startsWith("y")) {
     const winBat = [
       "@echo off",
-      "title TFsecure Local Host Server (" + orgName + " - " + facilityCode + ")",
+      "title Jusclick Local Host Server (" + orgName + " - " + facilityCode + ")",
       "echo ======================================================================",
-      "echo   TFsecure Gate Access Control - Local Host Server",
+      "echo   Jusclick Gate Access Control - Local Host Server",
       "echo   Organization : " + orgName + " (" + facilityCode + ")",
       "echo   Local URL    : http://localhost:" + hostPort,
       "echo   Facility LAN : http://" + primaryLanIp + ":" + hostPort,
@@ -182,28 +182,28 @@ async function main() {
       "npm run dev -- --port=" + hostPort + " --host=" + bindHost,
       "pause",
     ].join("\r\n");
-    fs.writeFileSync(path.resolve(process.cwd(), "start-tfsecure-windows.bat"), winBat, "utf8");
+    fs.writeFileSync(path.resolve(process.cwd(), "start-Jusclick-windows.bat"), winBat, "utf8");
 
     const unixSh = [
       "#!/usr/bin/env bash",
       "set -e",
       'echo "======================================================================"',
-      'echo "  TFsecure Gate Access Control - Local Host Server"',
+      'echo "  Jusclick Gate Access Control - Local Host Server"',
       'echo "  Organization : ' + orgName + " (" + facilityCode + ')"',
       'echo "  Local URL    : http://localhost:' + hostPort + '"',
       'echo "  Facility LAN : http://' + primaryLanIp + ":" + hostPort + '"',
       'echo "======================================================================"',
       "npm run dev -- --port=" + hostPort + " --host=" + bindHost,
     ].join("\n");
-    const unixPath = path.resolve(process.cwd(), "start-tfsecure-unix.sh");
+    const unixPath = path.resolve(process.cwd(), "start-Jusclick-unix.sh");
     fs.writeFileSync(unixPath, unixSh, "utf8");
     try {
       fs.chmodSync(unixPath, 0o755);
     } catch {
       // ignore chmod on Windows
     }
-    console.log(`  ✓ Created Windows launcher: ${C.cyan}start-tfsecure-windows.bat${C.reset}`);
-    console.log(`  ✓ Created macOS/Linux launcher: ${C.cyan}start-tfsecure-unix.sh${C.reset}`);
+    console.log(`  ✓ Created Windows launcher: ${C.cyan}start-Jusclick-windows.bat${C.reset}`);
+    console.log(`  ✓ Created macOS/Linux launcher: ${C.cyan}start-Jusclick-unix.sh${C.reset}`);
   }
 
   if (runBuildNow.startsWith("y") && !isNonInteractive) {
@@ -224,7 +224,7 @@ async function main() {
 
   console.log("");
   console.log(`${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
-  console.log(`${C.bold}  SETUP COMPLETE — TFsecure Local Host & Multi-Platform Summary${C.reset}`);
+  console.log(`${C.bold}  SETUP COMPLETE — Jusclick Local Host & Multi-Platform Summary${C.reset}`);
   console.log(`${C.green}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}`);
   console.log(`  • Desktop Workstation URL : ${C.cyan}http://localhost:${hostPort}${C.reset}`);
   console.log(`  • Facility LAN Gate URL   : ${C.cyan}http://${primaryLanIp}:${hostPort}${C.reset}`);
@@ -236,7 +236,7 @@ async function main() {
   console.log("");
 
   if (startServerNow.startsWith("y") && !isNonInteractive) {
-    console.log(`  Starting TFsecure local server on http://${bindHost}:${hostPort} ...`);
+    console.log(`  Starting Jusclick local server on http://${bindHost}:${hostPort} ...`);
     const child = spawn("npm", ["run", "dev", "--", `--port=${hostPort}`, `--host=${bindHost}`], {
       stdio: "inherit",
       shell: true,

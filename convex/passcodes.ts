@@ -20,7 +20,10 @@ export const issue = mutation({
     kind,
     hours: v.number(),
     company: v.optional(v.string()),
-    hostDepartmentId: v.optional(v.id("departments")),
+    phone: v.optional(v.string()),
+    idNumber: v.optional(v.string()),
+    vehiclePlate: v.optional(v.string()),
+    purpose: v.optional(v.string()),
     csrfToken: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
@@ -65,6 +68,10 @@ export const issue = mutation({
         visitorName: name,
         kind: a.kind,
         company: cleanCompany,
+        phone: sanitizeServerText(a.phone, 32) || undefined,
+        idNumber: sanitizeServerText(a.idNumber, 40) || undefined,
+        vehiclePlate: sanitizeServerText(a.vehiclePlate, 24).toUpperCase() || undefined,
+        purpose: sanitizeServerText(a.purpose, 120) || undefined,
         hostDepartmentId: resolvedDepartmentId,
         hostName,
         issuedBy: me.userId,
@@ -133,6 +140,10 @@ export const inspect = mutation({
         hostDepartmentId: p.hostDepartmentId,
         issuedBy: p.issuedBy,
         expiresAt: p.expiresAt,
+        phone: p.phone,
+        idNumber: p.idNumber,
+        vehiclePlate: p.vehiclePlate,
+        purpose: p.purpose,
       } : undefined,
       visitor: result === "granted" ? p!.visitorName : undefined,
     };
@@ -168,17 +179,25 @@ export const checkIn = mutation({
     const now = Date.now();
     if (p.expiresAt < now) return { ok: false as const, error: "Passcode has expired" };
 
-    const cleanBadge = a.badgeNumber.trim().toUpperCase() || "TFC-GATE";
+    const cleanBadge = sanitizeServerText(a.badgeNumber, 24).toUpperCase();
+    if (!cleanBadge) return { ok: false as const, error: "Badge number is required" };
+    const badgeHolder = await ctx.db
+      .query("passcodes")
+      .withIndex("by_badge_number", q => q.eq("badgeNumber", cleanBadge))
+      .first();
+    if (badgeHolder && badgeHolder._id !== p._id && !badgeHolder.checkedOutAt) {
+      return { ok: false as const, error: `Badge ${cleanBadge} is already assigned to another visitor` };
+    }
 
     await ctx.db.patch(p._id, {
       usedAt: now,
       checkedInAt: now,
       checkedInBy: me.name,
       badgeNumber: cleanBadge,
-      idType: a.idType || "Verified at Gate",
-      idNumber: a.idNumber,
-      vehiclePlate: a.vehiclePlate,
-      notes: a.guardNotes,
+      idType: sanitizeServerText(a.idType, 40) || "Verified at Gate",
+      idNumber: sanitizeServerText(a.idNumber, 40) || undefined,
+      vehiclePlate: sanitizeServerText(a.vehiclePlate, 24).toUpperCase() || undefined,
+      notes: sanitizeServerText(a.guardNotes, 160) || undefined,
     });
 
     await ctx.db.insert("gateEvents", { passcodeId: p._id, guardId: me.userId, result: "granted", at: now });
@@ -217,15 +236,18 @@ export const checkOut = mutation({
 
     const p = await ctx.db.get(a.passcodeId);
     if (!p) return { ok: false as const, error: "Passcode record not found" };
+    if (!p.checkedInAt && !p.usedAt) return { ok: false as const, error: "Visitor has not been checked in" };
+    if (p.checkedOutAt) return { ok: false as const, error: "Visitor was already checked out" };
 
     const now = Date.now();
-    const cleanNotes = a.checkoutNotes?.trim() || "Checked out";
+    const cleanNotes = sanitizeServerText(a.checkoutNotes, 160) || "Checked out";
 
     await ctx.db.patch(a.passcodeId, {
       checkedOutAt: now,
       checkedOutBy: me.name,
       checkoutNotes: cleanNotes,
     });
+    await ctx.db.insert("gateEvents", { passcodeId: p._id, guardId: me.userId, result: "checked_out", at: now });
 
     await writeAudit(
       ctx,
@@ -243,6 +265,35 @@ export const checkOut = mutation({
       `${p.visitorName} (${p.kind}) has checked out and departed the facility.`
     );
 
+    return { ok: true as const };
+  },
+});
+
+export const reject = mutation({
+  args: {
+    passcodeId: v.id("passcodes"),
+    reason: v.string(),
+  },
+  handler: async (ctx, a) => {
+    const me = await authorize(ctx, "passcode.validate", "gate identity mismatch");
+    if (!me) return { ok: false as const, error: "Your role cannot reject gate entry" };
+    const passcode = await ctx.db.get(a.passcodeId);
+    if (!passcode) return { ok: false as const, error: "Passcode record not found" };
+    if (passcode.revokedAt) return { ok: false as const, error: "Passcode was already revoked" };
+    if (passcode.usedAt || passcode.checkedInAt || passcode.checkedOutAt) {
+      return { ok: false as const, error: "Passcode is no longer eligible for rejection" };
+    }
+
+    const now = Date.now();
+    const reason = sanitizeServerText(a.reason, 160) || "Identity mismatch at gate";
+    await ctx.db.patch(passcode._id, { revokedAt: now });
+    await ctx.db.insert("gateEvents", {
+      passcodeId: passcode._id,
+      guardId: me.userId,
+      result: "identity_mismatch",
+      at: now,
+    });
+    await writeAudit(ctx, me, "gate.deny", false, `${passcode.visitorName}: ${reason}`);
     return { ok: true as const };
   },
 });

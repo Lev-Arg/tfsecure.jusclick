@@ -1,6 +1,6 @@
 {
-  "appId": "com.tfcommodities.tfsecure",
-  "appName": "TFsecure",
+  "appId": "com.jusclick.levelace",
+  "appName": "Jusclick-TeQiQ",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "server": {
@@ -12,7 +12,7 @@
     "contentInset": "automatic",
     "preferredContentMode": "mobile",
     "backgroundColor": "#0e1712",
-    "scheme": "TFsecure"
+    "scheme": "Jusclick"
   },
   "android": {
     "backgroundColor": "#0e1712",

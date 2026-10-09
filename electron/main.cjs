@@ -7,7 +7,7 @@ function createMainWindow() {
     height: 920,
     minWidth: 1024,
     minHeight: 700,
-    title: "TFsecure — Security Operations & Gate Access Control",
+    title: "Jusclick — Security Operations & Gate Access Control",
     backgroundColor: "#0e1712",
     icon: path.join(__dirname, "../public/pwa-512x512.png"),
     autoHideMenuBar: true,
@@ -18,7 +18,7 @@ function createMainWindow() {
     },
   });
 
-  const devServerUrl = process.env.TFSECURE_SERVER_URL;
+  const devServerUrl = process.env.Jusclick_SERVER_URL;
   if (devServerUrl) {
     win.loadURL(devServerUrl);
   } else {

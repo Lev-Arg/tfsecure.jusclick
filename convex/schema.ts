@@ -6,13 +6,30 @@ export const kind = v.union(v.literal("visitor"), v.literal("contractor"), v.lit
 export default defineSchema({
   ...authTables,
   departments: defineTable({ name: v.string() }).index("by_name", ["name"]),
-  profiles: defineTable({ userId: v.id("users"), name: v.string(), email: v.string(), role, active: v.optional(v.boolean()), departmentId: v.optional(v.id("departments")) })
-    .index("by_user", ["userId"]),
+  profiles: defineTable({ userId: v.id("users"), name: v.string(), email: v.string(), role, active: v.optional(v.boolean()), departmentId: v.optional(v.id("departments")), isPrimaryAdmin: v.optional(v.boolean()) })
+    .index("by_user", ["userId"])
+    .index("by_email", ["email"])
+    .index("by_role_and_active", ["role", "active"]),
+  invitations: defineTable({
+    email: v.string(),
+    name: v.string(),
+    role,
+    departmentId: v.optional(v.id("departments")),
+    invitedBy: v.id("users"),
+    codeHash: v.string(),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    acceptedAt: v.optional(v.number()),
+  })
+    .index("by_email", ["email"])
+    .index("by_code_hash", ["codeHash"]),
   passcodes: defineTable({
     codeHash: v.string(),
     visitorName: v.string(),
     kind,
     company: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    purpose: v.optional(v.string()),
     hostDepartmentId: v.optional(v.id("departments")),
     hostName: v.optional(v.string()),
     issuedBy: v.id("users"),
@@ -29,7 +46,9 @@ export default defineSchema({
     checkedOutAt: v.optional(v.number()),
     checkedOutBy: v.optional(v.string()),
     checkoutNotes: v.optional(v.string()),
-  }).index("by_hash", ["codeHash"]),
+  })
+    .index("by_hash", ["codeHash"])
+    .index("by_badge_number", ["badgeNumber"]),
   gateEvents: defineTable({ passcodeId: v.optional(v.id("passcodes")), guardId: v.id("users"), result: v.string(), at: v.number() }),
   failures: defineTable({ at: v.number() }).index("by_at", ["at"]),
   notifications: defineTable({ userId: v.id("users"), kind: v.string(), message: v.string(), at: v.number(), read: v.boolean() }).index("by_user", ["userId", "at"]),

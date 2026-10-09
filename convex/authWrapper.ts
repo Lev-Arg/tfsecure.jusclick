@@ -17,6 +17,12 @@ export const preAuthCheck = mutation({
       v.literal("emailVerify")
     ),
   },
+  returns: v.object({
+    allowed: v.boolean(),
+    error: v.optional(v.string()),
+    retryAfter: v.optional(v.number()),
+    accountExists: v.optional(v.boolean()),
+  }),
   handler: async (ctx, args) => {
     const identifier = args.email.toLowerCase().trim();
 
@@ -36,6 +42,22 @@ export const preAuthCheck = mutation({
         error: `Too many attempts. Please try again in ${rateLimitResult.retryAfter} seconds.`,
         retryAfter: rateLimitResult.retryAfter,
       };
+    }
+
+    if (args.action === "signUp") {
+      const existingAccount = await ctx.db
+        .query("authAccounts")
+        .withIndex("providerAndAccountId", q =>
+          q.eq("provider", "password").eq("providerAccountId", identifier)
+        )
+        .unique();
+      if (existingAccount) {
+        return {
+          allowed: false,
+          accountExists: true,
+          error: "An account with this email already exists. Sign in, or reset your password if you forgot it.",
+        };
+      }
     }
 
     // Validate password for signUp and passwordReset when a password is provided

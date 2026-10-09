@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================================================"
-echo "  TFsecure — Security Operations & Gate Access Control (Jusclick-TeQiQ)"
+echo "  Jusclick — Security Operations & Gate Access Control (Jusclick-TeQiQ)"
 echo "  One-Time Local Host Setup & Multi-Platform Provisioning (macOS / Linux)"
 echo "============================================================================"
 echo ""
@@ -21,4 +21,4 @@ echo "[2/3] Launching Interactive One-Time Setup Wizard..."
 node setup.mjs
 
 echo ""
-echo "[3/3] Setup finished. Start the local server anytime with: ./start-tfsecure-unix.sh"
+echo "[3/3] Setup finished. Start the local server anytime with: ./start-Jusclick-unix.sh"

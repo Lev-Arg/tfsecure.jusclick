@@ -47,7 +47,7 @@ export interface LocalSetupConfig {
 function buildInteractiveSetupMjs(cfg: LocalSetupConfig): string {
   return `#!/usr/bin/env node
 /**
- * TFsecure — Jusclick-TeQiQ Gate Access & Security Operations
+ * Jusclick — Jusclick-TeQiQ Gate Access & Security Operations
  * Interactive One-Time Local Host Setup & Multi-Platform Provisioning Wizard
  * Pre-configured for: ${cfg.orgName} (${cfg.facilityCode})
  *
@@ -84,12 +84,6 @@ function getLanIp() {
 }
 
 async function main() {
-  console.log("");
-  console.log(C.green + "==============================================================================" + C.reset);
-  console.log(C.bold + "  TFsecure — Security Operations & Gate Access Control (Jusclick-TeQiQ v2.5)" + C.reset);
-  console.log(C.gold + "  Interactive One-Time Local Host Setup & Multi-Platform Provisioning" + C.reset);
-  console.log(C.green + "==============================================================================" + C.reset);
-  console.log("");
 
   const detectedLanIp = getLanIp();
   let orgName = ${JSON.stringify(cfg.orgName)};
@@ -133,8 +127,7 @@ async function main() {
     provisionedAt: new Date().toISOString(),
   };
 
-  fs.writeFileSync(path.resolve(process.cwd(), "tfsecure.host.json"), JSON.stringify(hostManifest, null, 2));
-  console.log("  [OK] Wrote tfsecure.host.json");
+  fs.writeFileSync(path.resolve(process.cwd(), "Jusclick.host.json"), JSON.stringify(hostManifest, null, 2));
 
   const envContent = [
     \`VITE_ORG_NAME="\${orgName}"\`,
@@ -146,22 +139,16 @@ async function main() {
 
   if (!fs.existsSync(path.resolve(process.cwd(), ".env.local"))) {
     fs.writeFileSync(path.resolve(process.cwd(), ".env.local"), envContent);
-    console.log("  [OK] Created .env.local");
+
   }
 
   if (!fs.existsSync(path.resolve(process.cwd(), "node_modules"))) {
-    console.log("  [..] Installing npm dependencies...");
+
     execSync("npm install", { stdio: "inherit" });
   }
 
-  console.log("  [..] Compiling production PWA & native assets (npm run build)...");
-  execSync("npm run build", { stdio: "inherit" });
 
-  console.log("");
-  console.log(C.green + "  SETUP COMPLETE!" + C.reset);
-  console.log("  • Workstation URL : " + C.cyan + \`http://localhost:\${hostPort}\` + C.reset);
-  console.log("  • Facility LAN    : " + C.cyan + \`http://\${detectedLanIp}:\${hostPort}\` + C.reset);
-  console.log("");
+  execSync("npm run build", { stdio: "inherit" });
 }
 
 main();
@@ -172,11 +159,11 @@ function buildWindowsBatchSetup(cfg: LocalSetupConfig): string {
   const lines = [
     "@echo off",
     "setlocal enabledelayedexpansion",
-    `title TFsecure One-Time Local Host Setup — ${cfg.orgName} (${cfg.facilityCode})`,
+    `title Jusclick One-Time Local Host Setup — ${cfg.orgName} (${cfg.facilityCode})`,
     "color 0A",
     "",
     "echo ============================================================================",
-    "echo   TFsecure — Security Operations ^& Gate Access Control (Jusclick-TeQiQ)",
+    "echo   Jusclick — Security Operations ^& Gate Access Control (Jusclick-TeQiQ)",
     `echo   Organization : ${cfg.orgName}`,
     `echo   Checkpoint   : ${cfg.facilityCode}`,
     `echo   System Admin : ${cfg.adminEmail}`,
@@ -216,23 +203,23 @@ function buildWindowsBatchSetup(cfg: LocalSetupConfig): string {
     "echo [STEP 3/5] Compiling production PWA ^& Native bundle...",
     "call npm run build",
     "",
-    "echo [STEP 4/5] Generating one-click server launcher (start-tfsecure-windows.bat)...",
+    "echo [STEP 4/5] Generating one-click server launcher (start-Jusclick-windows.bat)...",
     "(",
     "  echo @echo off",
-    `  echo title TFsecure Server — ${cfg.orgName} (${cfg.facilityCode})`,
-    "  echo echo Starting TFsecure Gate Access Control Server...",
+    `  echo title Jusclick Server — ${cfg.orgName} (${cfg.facilityCode})`,
+    "  echo echo Starting Jusclick Gate Access Control Server...",
     `  echo echo Workstation URL : http://localhost:${cfg.hostPort}`,
     `  echo echo Facility LAN    : http://${cfg.lanIp}:${cfg.hostPort}`,
     `  echo npm run dev -- --port=${cfg.hostPort} --host=${cfg.bindHost}`,
     "  echo pause",
-    ") > start-tfsecure-windows.bat",
+    ") > start-Jusclick-windows.bat",
   ];
 
   if (cfg.enableFirewallRule) {
     lines.push(
       "",
       `echo [OPTIONAL] Opening Windows Firewall TCP port ${cfg.hostPort} for LAN iOS/Android Gate Tablets...`,
-      `netsh advfirewall firewall add rule name="TFsecure Gate Server (${cfg.hostPort})" dir=in action=allow protocol=TCP localport=${cfg.hostPort} >nul 2>nul`,
+      `netsh advfirewall firewall add rule name="Jusclick Gate Server (${cfg.hostPort})" dir=in action=allow protocol=TCP localport=${cfg.hostPort} >nul 2>nul`,
     );
   }
 
@@ -240,7 +227,7 @@ function buildWindowsBatchSetup(cfg: LocalSetupConfig): string {
     lines.push(
       "",
       "echo [OPTIONAL] Creating Windows Desktop Shortcut...",
-      "powershell -NoProfile -Command \"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\\\\TFsecure Local Server.lnk'); $s.TargetPath = (Get-Location).Path + '\\\\start-tfsecure-windows.bat'; $s.WorkingDirectory = (Get-Location).Path; $s.Save()\" >nul 2>nul",
+      "powershell -NoProfile -Command \"$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\\\\Jusclick Local Server.lnk'); $s.TargetPath = (Get-Location).Path + '\\\\start-Jusclick-windows.bat'; $s.WorkingDirectory = (Get-Location).Path; $s.Save()\" >nul 2>nul",
     );
   }
 
@@ -252,7 +239,7 @@ function buildWindowsBatchSetup(cfg: LocalSetupConfig): string {
     `echo   LAN Gate URL : http://${cfg.lanIp}:${cfg.hostPort}`,
     "echo ============================================================================",
     "echo.",
-    "set /p LAUNCH_NOW=\"Launch TFsecure Local Server now? (Y/N) [Y]: \"",
+    "set /p LAUNCH_NOW=\"Launch Jusclick Local Server now? (Y/N) [Y]: \"",
     "if /I \"%LAUNCH_NOW%\"==\"N\" goto :EOF",
     `start "" "http://localhost:${cfg.hostPort}"`,
     `call npm run dev -- --port=${cfg.hostPort} --host=${cfg.bindHost}`,
@@ -268,7 +255,7 @@ function buildUnixSetupSh(cfg: LocalSetupConfig): string {
     "set -e",
     "",
     'echo "============================================================================"',
-    'echo "  TFsecure — Security Operations & Gate Access Control (Jusclick-TeQiQ)"',
+    'echo "  Jusclick — Security Operations & Gate Access Control (Jusclick-TeQiQ)"',
     `echo "  Organization : ${cfg.orgName} (${cfg.facilityCode})"`,
     `echo "  Admin Email  : ${cfg.adminEmail}"`,
     'echo "============================================================================"',
@@ -297,16 +284,16 @@ function buildUnixSetupSh(cfg: LocalSetupConfig): string {
     'echo "[3/4] Compiling production PWA & native bundle..."',
     "npm run build",
     "",
-    "cat <<'EOF' > start-tfsecure-unix.sh",
+    "cat <<'EOF' > start-Jusclick-unix.sh",
     "#!/usr/bin/env bash",
     `npm run dev -- --port=${cfg.hostPort} --host=${cfg.bindHost}`,
     "EOF",
-    "chmod +x start-tfsecure-unix.sh",
+    "chmod +x start-Jusclick-unix.sh",
     "",
     'echo "[4/4] Setup complete!"',
     `echo "  Workstation URL : http://localhost:${cfg.hostPort}"`,
     `echo "  LAN Gate URL    : http://${cfg.lanIp}:${cfg.hostPort}"`,
-    'echo "  Run ./start-tfsecure-unix.sh to start the local server."',
+    'echo "  Run ./start-Jusclick-unix.sh to start the local server."',
     "",
   ].join("\n");
 }
@@ -397,10 +384,10 @@ export const PWAInstallButton: React.FC<{
       disabled={installing}
       title={
         isInstallable
-          ? "Install TFsecure as a standalone app on this device"
+          ? "Install Jusclick as a standalone app on this device"
           : isIOS
-            ? "Install TFsecure on iPhone / iPad or configure Local Host"
-            : "Install TFsecure (iOS / Android / Windows) or Run One-Time Local Setup"
+            ? "Install Jusclick on iPhone / iPad or configure Local Host"
+            : "Install Jusclick (iOS / Android / Windows) or Run One-Time Local Setup"
       }
       style={
         darkGlass
@@ -466,7 +453,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
 
   const [setupCfg, setSetupCfg] = useState<LocalSetupConfig>(() => {
     try {
-      const saved = localStorage.getItem("tfsecure_local_host_setup_v1");
+      const saved = localStorage.getItem("Jusclick_local_host_setup_v1");
       if (saved) {
         return JSON.parse(saved) as LocalSetupConfig;
       }
@@ -587,7 +574,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
 
   const handleSaveLocalSetup = () => {
     try {
-      localStorage.setItem("tfsecure_local_host_setup_v1", JSON.stringify(setupCfg));
+      localStorage.setItem("Jusclick_local_host_setup_v1", JSON.stringify(setupCfg));
     } catch {
       // ignore
     }
@@ -627,7 +614,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
               iOS, Android &amp; Windows Installation + One-Time Local Host Setup
             </h2>
             <p className="status-mute" style={{ margin: "6px 0 0", maxWidth: "72ch", fontSize: 13 }}>
-              Deploy TFsecure as an installable standalone app across Windows workstations, Android
+              Deploy Jusclick as an installable standalone app across Windows workstations, Android
               gate tablets, and iPhones/iPads, or generate the interactive one-time local hosting
               setup package for on-premise facility servers.
             </p>
@@ -816,7 +803,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                 <strong style={{ fontSize: 14 }}>02. Facility Identity &amp; Primary Administrator</strong>
                 <p className="status-mute" style={{ margin: "2px 0 0", fontSize: 12.5 }}>
                   These values are embedded into your generated <code>.env.local</code>,{" "}
-                  <code>tfsecure.host.json</code>, and one-time installer scripts.
+                  <code>Jusclick.host.json</code>, and one-time installer scripts.
                 </p>
               </div>
 
@@ -992,7 +979,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                       Create Windows Desktop Launcher Shortcut
                     </strong>
                     <span className="status-mute" style={{ fontSize: 12 }}>
-                      Generates a one-click desktop shortcut (<code>TFsecure Local Server.lnk</code>
+                      Generates a one-click desktop shortcut (<code>Jusclick Local Server.lnk</code>
                       ) on the guard workstation.
                     </span>
                   </div>
@@ -1148,7 +1135,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                     </strong>
                     <p className="status-mute" style={{ margin: 0, fontSize: 12 }}>
                       POSIX shell installer that provisions environment variables, compiles the PWA
-                      bundle, and creates <code>start-tfsecure-unix.sh</code>.
+                      bundle, and creates <code>start-Jusclick-unix.sh</code>.
                     </p>
                   </div>
                   <button
@@ -1209,7 +1196,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h2 className="panel-title">Install TFsecure on Windows, iOS &amp; Android</h2>
+              <h2 className="panel-title">Install Jusclick on Windows, iOS &amp; Android</h2>
               <p className="status-mute" style={{ margin: "2px 0 0", fontSize: 12.5 }}>
                 Direct standalone installation with offline Service Worker caching, home screen
                 icons, and dedicated window framing.
@@ -1263,7 +1250,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                 {isInstallable && !isInstalled && (
                   <button type="button" className="pri" onClick={() => install()}>
                     <Download size={15} />
-                    <span>Install TFsecure on Windows Now</span>
+                    <span>Install Jusclick on Windows Now</span>
                   </button>
                 )}
               </div>
@@ -1275,11 +1262,11 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                   </strong>
                   <ol className="status-mute" style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
                     <li>
-                      Click the <strong>Install App</strong> button in the TFsecure top bar (or the
+                      Click the <strong>Install App</strong> button in the Jusclick top bar (or the
                       app install icon in your Microsoft Edge / Chrome address bar).
                     </li>
                     <li>
-                      Confirm <strong>Install</strong>. TFsecure launches in its own dedicated
+                      Confirm <strong>Install</strong>. Jusclick launches in its own dedicated
                       Windows desktop window without browser toolbars.
                     </li>
                     <li>
@@ -1319,7 +1306,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
               <div>
                 <div className="meta-inline">iOS 15+ &amp; iPadOS (iPhone / iPad Safari &amp; Xcode)</div>
                 <strong style={{ display: "block", fontSize: 15, marginTop: 2 }}>
-                  Install TFsecure on iPhone or iPad (Home Screen Standalone App)
+                  Install Jusclick on iPhone or iPad (Home Screen Standalone App)
                 </strong>
               </div>
 
@@ -1330,7 +1317,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                   </strong>
                   <ol className="status-mute" style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
                     <li>
-                      Open <strong>TFsecure</strong> in <strong>Safari</strong> on your iPhone or
+                      Open <strong>Jusclick</strong> in <strong>Safari</strong> on your iPhone or
                       iPad (via cloud URL or facility LAN{" "}
                       <code>
                         http://{setupCfg.lanIp}:{setupCfg.hostPort}
@@ -1346,7 +1333,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                       <strong>Add</strong>.
                     </li>
                     <li>
-                      Launch <strong>TFsecure</strong> from your Home Screen — it runs full-screen
+                      Launch <strong>Jusclick</strong> from your Home Screen — it runs full-screen
                       with the high-resolution 180×180 Apple Touch Icon and offline caching.
                     </li>
                   </ol>
@@ -1359,7 +1346,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                   <p className="status-mute" style={{ margin: "0 0 10px", fontSize: 12.5, lineHeight: 1.6 }}>
                     Compile a native iOS/iPadOS application package using the pre-configured{" "}
                     <code>capacitor.config.json</code> (Bundle ID:{" "}
-                    <code>com.tfcommodities.tfsecure</code>):
+                    <code>com.tfcommodities.Jusclick</code>):
                   </p>
                   <div
                     className="mono"
@@ -1392,7 +1379,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                 <div>
                   <div className="meta-inline">Android 9+ Smartphones &amp; Rugged Gate Tablets</div>
                   <strong style={{ display: "block", fontSize: 15, marginTop: 2 }}>
-                    Install TFsecure on Android (WebAPK or Signed Native APK)
+                    Install Jusclick on Android (WebAPK or Signed Native APK)
                   </strong>
                 </div>
                 {isInstallable && !isInstalled && (
@@ -1410,7 +1397,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                   </strong>
                   <ol className="status-mute" style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.6 }}>
                     <li>
-                      Open TFsecure in <strong>Chrome for Android</strong> and tap{" "}
+                      Open Jusclick in <strong>Chrome for Android</strong> and tap{" "}
                       <strong>Install App</strong> in the top bar (or open Chrome&apos;s menu{" "}
                       <strong>⋮ → Install app</strong>).
                     </li>
@@ -1484,7 +1471,7 @@ export const PlatformInstallerAndSetupCenter: React.FC<{
                       Interactive CLI Provisioning
                     </div>
                   </td>
-                  <td className="mono">tfsecure.host.json / .env.local</td>
+                  <td className="mono">Jusclick.host.json / .env.local</td>
                   <td className="mono">setup.mjs</td>
                   <td className="mono">npm run setup</td>
                   <td>

@@ -21,7 +21,7 @@ export function sanitizeText(raw: string | undefined, maxLen = 120): string {
  * Updated 2026: Server-side validation is the authoritative security check.
  * Client-side generation is used for UI purposes only.
  */
-const CSRF_STORAGE_KEY = "tfsecure_csrf_token_v1";
+const CSRF_STORAGE_KEY = "Jusclick_csrf_token_v1";
 let inMemoryCsrfToken: string | null = null;
 
 export function setCsrfToken(token: string) {
@@ -87,8 +87,7 @@ export function verifyCsrfToken(submittedToken: string | null | undefined): bool
   return diff === 0;
 }
 
-/* ==================== PROFESSIONAL SOFT HIGH STRETCHED DING-DONG CHIME ==================== */
-const SOUND_MUTE_KEY = "tfsecure_sound_muted_v1";
+const SOUND_MUTE_KEY = "Jusclick_sound_muted_v1";
 let sharedAudioCtx: AudioContext | null = null;
 let lastChimeAt = 0;
 
@@ -435,14 +434,14 @@ export const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
   accentColor: "#059669",
   defaultPasscodeHours: 4,
   maxPasscodeHours: 72,
-  bannerTitle: "SECURITY • ACCESS CONTROL MANAGEMENT",
+  bannerTitle: "• ACCESS CONTROL • MANAGEMENT",
   customLogoUrl: undefined,
   loginBackgroundMode: "checkpoint",
   customLoginBgUrl: undefined,
   workspaceBackgroundMode: "facility",
   customWorkspaceBgUrl: undefined,
   siteCapacityLimit: 100,
-  requireAdminApproval: false,
+  requireAdminApproval: true,
   autoFlagOverstays: true,
   systemVersion: "2.4.2",
   releaseChannel: "Production",
@@ -481,22 +480,40 @@ type RegistryState = {
 };
 
 const REGISTRY_KEY = "tf_commodities_gate_registry_v1";
-const IMG_LOGO_KEY = "tfsecure_custom_logo_v1";
-const IMG_LOGIN_BG_KEY = "tfsecure_custom_login_bg_v1";
-const IMG_WORKSPACE_BG_KEY = "tfsecure_custom_workspace_bg_v1";
+const IMG_LOGO_KEY = "Jusclick_custom_logo_v1";
+const IMG_LOGIN_BG_KEY = "Jusclick_custom_login_bg_v1";
+const IMG_WORKSPACE_BG_KEY = "Jusclick_custom_workspace_bg_v1";
 
-// SECURITY WARNING (2026): localStorage contains sensitive data including:
-// - codeHash values (passcode hashes)
-// - visitor names, companies (PII)
-// - user roles and department assignments (access control data)
-// - audit trail (security-sensitive logs)
-// 
-// Per OWASP and RFC 9700 (OAuth 2.0 BCP), sensitive data should NOT be stored in localStorage
-// as it's accessible to any JavaScript running on the page (XSS vulnerability).
-// 
-// TODO: Refactor to use Convex as single source of truth. Only keep non-sensitive UI state
-// (theme preference, etc.) in localStorage. This requires architectural changes to support
-// offline-first mode without storing sensitive data locally.
+const SAFE_PERSISTED_FIELDS = [
+  "systemConfig",
+  "localDepartments",
+  "gateFailureTimestamps",
+  "rbacVersion",
+  "lastUpdatedAt",
+] as const;
+
+function toSafePersistedState(): Partial<RegistryState> {
+  return {
+    rbacVersion: 3,
+    localDepartments: state.localDepartments.slice(0, 50),
+    gateFailureTimestamps: state.gateFailureTimestamps.slice(-200),
+    systemConfig: {
+      ...state.systemConfig,
+      customLogoUrl: undefined,
+      customLoginBgUrl: undefined,
+      customWorkspaceBgUrl: undefined,
+    },
+  };
+}
+
+function isSafePersistedRegistry(value: unknown): value is Partial<RegistryState> {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.localPasscodes || record.onSiteRecords || record.localAuditEntries || record.localNotifications) {
+    return false;
+  }
+  return SAFE_PERSISTED_FIELDS.some((field) => field in record);
+}
 
 function loadRegistry(): RegistryState {
   let savedLogo: string | undefined;
@@ -514,57 +531,80 @@ function loadRegistry(): RegistryState {
     const raw = localStorage.getItem(REGISTRY_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const rawCfg = parsed.systemConfig ?? {};
-      const customLogoUrl = rawCfg.customLogoUrl || savedLogo || undefined;
-      const customLoginBgUrl = rawCfg.customLoginBgUrl || savedLoginBg || undefined;
-      const customWorkspaceBgUrl = rawCfg.customWorkspaceBgUrl || savedWorkspaceBg || undefined;
-      const isMigratedV3 = parsed.rbacVersion === 3;
-      return {
-        rbacVersion: 3,
-        attachmentsByHash: parsed.attachmentsByHash ?? {},
-        attachmentsByPasscodeId: parsed.attachmentsByPasscodeId ?? {},
-        attachmentsByName: parsed.attachmentsByName ?? {},
-        localPasscodes: Array.isArray(parsed.localPasscodes) ? parsed.localPasscodes : [],
-        revokedPasscodeIds: parsed.revokedPasscodeIds ?? {},
-        usedPasscodeTimestamps: parsed.usedPasscodeTimestamps ?? {},
-        gateFailureTimestamps: Array.isArray(parsed.gateFailureTimestamps) ? parsed.gateFailureTimestamps : [],
-        localDepartments: Array.isArray(parsed.localDepartments) && parsed.localDepartments.length > 0
-          ? parsed.localDepartments
-          : DEFAULT_LOCAL_DEPARTMENTS,
-        removedDepartmentIds: parsed.removedDepartmentIds ?? {},
-        onSiteRecords: (parsed.onSiteRecords ?? []).map((r: any) => ({
-          ...r,
-          hostName: sanitizeText(r.hostName, 80) || "Staff Host",
-        })),
-        checkedOutPasscodeIds: parsed.checkedOutPasscodeIds ?? {},
-        deniedPasscodeIds: parsed.deniedPasscodeIds ?? {},
-        deniedCodeHashes: parsed.deniedCodeHashes ?? {},
-        userDepartmentOverrides: parsed.userDepartmentOverrides ?? {},
-        userRoleOverrides: parsed.userRoleOverrides ?? {},
-        bootstrapAdminEmail: parsed.bootstrapAdminEmail,
-        bootstrapAdminProfileId: parsed.bootstrapAdminProfileId,
-        registeredProfiles: parsed.registeredProfiles ?? {},
-        invitedUsers: parsed.invitedUsers ?? {},
-        pendingApprovalEmails: isMigratedV3 ? (parsed.pendingApprovalEmails ?? {}) : {},
-        approvedUserKeys: parsed.approvedUserKeys ?? {},
-        policyAcceptances: parsed.policyAcceptances ?? {},
-        pilotScenarioChecks: parsed.pilotScenarioChecks ?? {},
-        localAuditEntries: parsed.localAuditEntries ?? [],
-        localNotifications: parsed.localNotifications ?? [],
-        systemConfig: {
-          ...DEFAULT_SYSTEM_CONFIG,
-          ...rawCfg,
-          requireAdminApproval: isMigratedV3 ? Boolean(rawCfg.requireAdminApproval) : false,
-          customLogoUrl,
-          customLoginBgUrl,
-          customWorkspaceBgUrl,
-          loginBackgroundMode:
-            rawCfg.loginBackgroundMode ?? (customLoginBgUrl ? "custom" : DEFAULT_SYSTEM_CONFIG.loginBackgroundMode),
-          workspaceBackgroundMode:
-            rawCfg.workspaceBackgroundMode ??
-            (customWorkspaceBgUrl ? "custom" : DEFAULT_SYSTEM_CONFIG.workspaceBackgroundMode),
-        },
-      };
+      if (isSafePersistedRegistry(parsed)) {
+        const rawCfg = (parsed.systemConfig ?? {}) as Partial<SystemConfig> & Record<string, unknown>;
+        const customLogoUrl = typeof rawCfg.customLogoUrl === "string" ? rawCfg.customLogoUrl : savedLogo || undefined;
+        const customLoginBgUrl = typeof rawCfg.customLoginBgUrl === "string" ? rawCfg.customLoginBgUrl : savedLoginBg || undefined;
+        const customWorkspaceBgUrl = typeof rawCfg.customWorkspaceBgUrl === "string" ? rawCfg.customWorkspaceBgUrl : savedWorkspaceBg || undefined;
+        const isMigratedV3 = parsed.rbacVersion === 3;
+        const bannerTitle =
+          typeof rawCfg.bannerTitle === "string" && rawCfg.bannerTitle.trim().length > 0
+            ? rawCfg.bannerTitle
+            : DEFAULT_SYSTEM_CONFIG.bannerTitle;
+        const loginBackgroundMode =
+          rawCfg.loginBackgroundMode === "checkpoint" ||
+          rawCfg.loginBackgroundMode === "facility" ||
+          rawCfg.loginBackgroundMode === "custom"
+            ? rawCfg.loginBackgroundMode
+            : customLoginBgUrl
+              ? "custom"
+              : DEFAULT_SYSTEM_CONFIG.loginBackgroundMode;
+        const workspaceBackgroundMode =
+          rawCfg.workspaceBackgroundMode === "facility" ||
+          rawCfg.workspaceBackgroundMode === "checkpoint" ||
+          rawCfg.workspaceBackgroundMode === "minimal" ||
+          rawCfg.workspaceBackgroundMode === "custom"
+            ? rawCfg.workspaceBackgroundMode
+            : customWorkspaceBgUrl
+              ? "custom"
+              : DEFAULT_SYSTEM_CONFIG.workspaceBackgroundMode;
+        const requireAdminApproval = isMigratedV3 ? Boolean(rawCfg.requireAdminApproval) : false;
+        return {
+          rbacVersion: 3,
+          attachmentsByHash: {},
+          attachmentsByPasscodeId: {},
+          attachmentsByName: {},
+          localPasscodes: [],
+          revokedPasscodeIds: {},
+          usedPasscodeTimestamps: {},
+          gateFailureTimestamps: Array.isArray(parsed.gateFailureTimestamps) ? parsed.gateFailureTimestamps : [],
+          localDepartments: Array.isArray(parsed.localDepartments) && parsed.localDepartments.length > 0
+            ? parsed.localDepartments
+            : DEFAULT_LOCAL_DEPARTMENTS,
+          removedDepartmentIds: {},
+          onSiteRecords: [],
+          checkedOutPasscodeIds: {},
+          deniedPasscodeIds: {},
+          deniedCodeHashes: {},
+          userDepartmentOverrides: {},
+          userRoleOverrides: {},
+          bootstrapAdminEmail: undefined,
+          bootstrapAdminProfileId: undefined,
+          registeredProfiles: {},
+          invitedUsers: {},
+          pendingApprovalEmails: isMigratedV3 ? (parsed.pendingApprovalEmails ?? {}) : {},
+          approvedUserKeys: {},
+          policyAcceptances: {},
+          pilotScenarioChecks: {},
+          localAuditEntries: [],
+          localNotifications: [],
+          systemConfig: {
+            ...DEFAULT_SYSTEM_CONFIG,
+            ...rawCfg,
+            bannerTitle:
+              bannerTitle === "SECURITY • ACCESS CONTROL MANAGEMENT" ||
+              bannerTitle === "SECURITY • ACCESS CONTROL • MANAGEMENT"
+                ? DEFAULT_SYSTEM_CONFIG.bannerTitle
+                : bannerTitle,
+            requireAdminApproval,
+            customLogoUrl,
+            customLoginBgUrl,
+            customWorkspaceBgUrl,
+            loginBackgroundMode,
+            workspaceBackgroundMode,
+          },
+        };
+      }
     }
   } catch {
     // ignore storage errors
@@ -815,40 +855,14 @@ function mergeRemoteState(incoming: Partial<RegistryState>) {
   subscribers.forEach(fn => fn());
 }
 
-function resolveSyncBearerToken(): string {
-  try {
-    const direct = localStorage.getItem("ConvexCredentials");
-    if (direct) return direct;
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith("__convexAuthJWT")) {
-        const val = localStorage.getItem(k);
-        if (val) return val;
-      }
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return getCsrfToken();
-}
-
 function pushStateToLanServer() {
   if (typeof window === "undefined" || isApplyingRemoteSync) return;
   try {
-    // Only send safe operational fields through BroadcastChannel - never broadcast secrets
     const safeBroadcastState = {
-      attachmentsByHash: state.attachmentsByHash,
-      attachmentsByPasscodeId: state.attachmentsByPasscodeId,
-      attachmentsByName: state.attachmentsByName,
-      localPasscodes: state.localPasscodes,
-      onSiteRecords: state.onSiteRecords,
-      revokedPasscodeIds: state.revokedPasscodeIds,
-      usedPasscodeTimestamps: state.usedPasscodeTimestamps,
-      checkedOutPasscodeIds: state.checkedOutPasscodeIds,
-      deniedPasscodeIds: state.deniedPasscodeIds,
-      deniedCodeHashes: state.deniedCodeHashes,
-      localAuditEntries: state.localAuditEntries.slice(0, 120),
-      localNotifications: state.localNotifications.slice(0, 80),
+      systemConfig: state.systemConfig,
+      localDepartments: state.localDepartments.slice(0, 50),
+      gateFailureTimestamps: state.gateFailureTimestamps.slice(-200),
+      rbacVersion: 3,
     };
     syncChannel?.postMessage({ __senderDeviceId: CLIENT_DEVICE_ID, state: safeBroadcastState });
   } catch {
@@ -857,29 +871,17 @@ function pushStateToLanServer() {
   try {
     const syncPayload = {
       __senderDeviceId: CLIENT_DEVICE_ID,
-      attachmentsByHash: state.attachmentsByHash,
-      attachmentsByPasscodeId: state.attachmentsByPasscodeId,
-      attachmentsByName: state.attachmentsByName,
-      localPasscodes: state.localPasscodes,
-      revokedPasscodeIds: state.revokedPasscodeIds,
-      usedPasscodeTimestamps: state.usedPasscodeTimestamps,
-      onSiteRecords: state.onSiteRecords,
-      checkedOutPasscodeIds: state.checkedOutPasscodeIds,
-      deniedPasscodeIds: state.deniedPasscodeIds,
-      deniedCodeHashes: state.deniedCodeHashes,
-      localAuditEntries: state.localAuditEntries.slice(0, 120),
-      localNotifications: state.localNotifications.slice(0, 80),
+      systemConfig: state.systemConfig,
+      localDepartments: state.localDepartments.slice(0, 50),
+      gateFailureTimestamps: state.gateFailureTimestamps.slice(-200),
+      rbacVersion: 3,
     };
 
-    const bearer = resolveSyncBearerToken();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${bearer}`,
-    };
-
-    fetch("/api/tfsecure-sync", {
+    fetch("/api/Jusclick-sync", {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(syncPayload),
     }).catch(() => {});
   } catch {
@@ -890,15 +892,11 @@ function pushStateToLanServer() {
 async function pullStateFromLanServer() {
   if (typeof window === "undefined") return;
   try {
-    const bearer = resolveSyncBearerToken();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${bearer}`,
-    };
-
-    const res = await fetch(`/api/tfsecure-sync?t=${Date.now()}`, {
+    const res = await fetch(`/api/Jusclick-sync?t=${Date.now()}`, {
       cache: "no-store",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+      },
     });
     if (!res.ok) return;
     const data = await res.json();
@@ -924,7 +922,7 @@ if (typeof window !== "undefined") {
 
   if ("BroadcastChannel" in window) {
     try {
-      syncChannel = new BroadcastChannel("tfsecure_registry_sync_v1");
+      syncChannel = new BroadcastChannel("Jusclick_registry_sync_v1");
       syncChannel.onmessage = ev => {
         try {
           // Validate message structure before processing
@@ -991,16 +989,14 @@ if (typeof window !== "undefined") {
               : {},
             localAuditEntries: Array.isArray(ev.data.state.localAuditEntries)
               ? ev.data.state.localAuditEntries.slice(0, 120)
-              : [],
+              : [], 
             localNotifications: Array.isArray(ev.data.state.localNotifications)
               ? ev.data.state.localNotifications.slice(0, 80)
               : [],
           };
           
           mergeRemoteState(safeState);
-        } catch (error) {
-          // Log validation failure for security monitoring
-          console.error("Invalid BroadcastChannel message rejected", error);
+        } catch {
         }
       };
     } catch {
@@ -1012,7 +1008,7 @@ if (typeof window !== "undefined") {
 
   if ("EventSource" in window) {
     try {
-      const es = new EventSource("/api/tfsecure-sync/stream");
+      const es = new EventSource("/api/Jusclick-sync/stream");
       es.onmessage = ev => {
         try {
           const msg = JSON.parse(ev.data);
@@ -1055,22 +1051,11 @@ function saveAndNotify() {
   }
 
   try {
-    localStorage.setItem(REGISTRY_KEY, JSON.stringify(state));
+    localStorage.setItem(REGISTRY_KEY, JSON.stringify(toSafePersistedState()));
   } catch {
-    // If main registry hits localStorage quota because of large embedded base64 images,
-    // keep the images in their dedicated keys and store the rest of the registry cleanly.
+    // Keep only non-sensitive UI/system state in localStorage.
     try {
-      const compactState: RegistryState = {
-        ...state,
-        localAuditEntries: state.localAuditEntries.slice(0, 120),
-        localNotifications: state.localNotifications.slice(0, 50),
-        systemConfig: {
-          ...state.systemConfig,
-          customLogoUrl: undefined,
-          customLoginBgUrl: undefined,
-          customWorkspaceBgUrl: undefined,
-        },
-      };
+      const compactState = toSafePersistedState();
       localStorage.setItem(REGISTRY_KEY, JSON.stringify(compactState));
     } catch {
       // ignore
@@ -1739,7 +1724,7 @@ export function exportSystemBackupJson(actorName = "System Admin", extraMetadata
   saveAndNotify();
 
   const payload = {
-    backupSchema: "tfsecure_enterprise_backup_v2",
+    backupSchema: "Jusclick_enterprise_backup_v2",
     exportedAt: new Date(now).toISOString(),
     exportedBy: actorName,
     metadata: extraMetadata ?? {},
@@ -1750,7 +1735,7 @@ export function exportSystemBackupJson(actorName = "System Admin", extraMetadata
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `tfsecure-backup-${new Date(now).toISOString().slice(0, 10)}.json`;
+  a.download = `Jusclick-backup-${new Date(now).toISOString().slice(0, 10)}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1946,7 +1931,7 @@ export function restoreSystemBackupJson(
       summary: `Restored ${restoredOnSite.length} gate records, ${Object.keys(state.invitedUsers).length} invitations, and system configuration.`,
     };
   } catch {
-    return { ok: false, error: "Could not parse backup JSON file. Ensure it is a valid TFsecure backup." };
+    return { ok: false, error: "Could not parse backup JSON file. Ensure it is a valid Jusclick backup." };
   }
 }
 

@@ -26,13 +26,35 @@ function make(id: string, subject: string) {
     id, apiKey: process.env.AUTH_RESEND_KEY, maxAge: 60 * 15,
     async generateVerificationToken() { return otp(); },
     async sendVerificationRequest({ identifier: email, token }) {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST", headers: { Authorization: `Bearer ${process.env.AUTH_RESEND_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from: process.env.AUTH_EMAIL_FROM ?? "TFsecure <onboarding@resend.dev>", to: [email], subject, text: `Your TFsecure code is ${token}. It expires in 15 minutes.` }),
-      });
-      if (!res.ok) throw new Error("Could not send email code");
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+      try {
+        console.log(`[ResendOTP] Sending email to ${email} with subject: ${subject}`);
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${process.env.AUTH_RESEND_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ from: process.env.AUTH_EMAIL_FROM ?? "Jusclick <onboarding@resend.dev>", to: [email], subject, text: `Your Jusclick code is ${token}. It expires in 15 minutes.` }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        console.log(`[ResendOTP] Response status: ${res.status}`);
+        if (!res.ok) {
+          const errorText = await res.text();
+          console.error(`[ResendOTP] Email send failed: ${res.status} - ${errorText}`);
+          throw new Error(`Could not send email code: ${res.status} - ${errorText}`);
+        }
+        console.log(`[ResendOTP] Email sent successfully to ${email}`);
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+        console.error(`[ResendOTP] Email send error:`, error);
+        if (error.name === 'AbortError') {
+          throw new Error("Email service timeout. Please try again.");
+        }
+        throw error;
+      }
     },
   });
 }
-export const ResendVerify = make("resend-verify", "Verify your TFsecure email");
-export const ResendReset = make("resend-reset", "Reset your TFsecure password");
+export const ResendVerify = make("resend-verify", "Verify your Jusclick email");
+export const ResendReset = make("resend-reset", "Reset your Jusclick password");

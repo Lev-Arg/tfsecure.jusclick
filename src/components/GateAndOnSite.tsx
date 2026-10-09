@@ -16,27 +16,9 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
   downloadCsv,
-  getAttachmentByHash,
-  getAttachmentByName,
-  getAttachmentByPasscodeId,
   getCsrfToken,
-  getEffectiveDepartmentId,
-  getEffectiveRole,
-  getMergedDepartments,
-  getMergedPasscodes,
-  getMergedUserDirectory,
   getNextAvailableBadge,
-  inspectLocalPasscode,
-  isProfileApproved,
-  markGateOperatorActionOnThisDevice,
-  recordGateDenial,
-  recordGuestCheckIn,
-  recordGuestCheckOut,
-  revokeLocalPasscode,
   sanitizeText,
-  sha256Hex,
-  useGateRegistry,
-  validateLocalPasscode,
   verifyCsrfToken,
 } from "../lib/gateRegistry";
 
@@ -64,8 +46,7 @@ function formatDuration(ms: number): string {
 
 export type UnifiedOnSitePerson = {
   key: string;
-  recordId?: string;
-  passcodeId?: string;
+  passcodeId: Id<"passcodes">;
   issuedByUserId?: string;
   hostDepartmentId?: string;
   visitorName: string;
@@ -90,149 +71,55 @@ export type UnifiedOnSitePerson = {
 export function useUnifiedOnSiteList() {
   const remotePasscodes = useQuery(api.passcodes.list) ?? [];
   const remoteDepts = useQuery(api.departments.list) ?? [];
-  const remoteUsers = useQuery(api.users.list) ?? [];
   const me = useQuery(api.users.me);
-  const registry = useGateRegistry();
-
-  const passcodes = useMemo(
-    () => getMergedPasscodes(remotePasscodes as any),
-    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
-  const users = useMemo(
-    () => getMergedUserDirectory(remoteUsers as any, me as any),
-    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
-  );
+  const passcodes = remotePasscodes;
+  const depts = remoteDepts;
 
   const deptName = (id?: string) => depts.find(d => d._id === id)?.name ?? "General";
 
   return useMemo(() => {
-    if (!me || !isProfileApproved(me)) {
+    if (!me || me.active !== true) {
       return { activeOnSite: [], checkedOutHistory: [], all: [] };
     }
 
-    const myDeptId = getEffectiveDepartmentId(me) ?? depts[0]?._id;
-    const myDeptName = myDeptId ? deptName(myDeptId) : "HSE & Security";
-
-    const map = new Map<string, UnifiedOnSitePerson>();
-    const userByUserId = new Map<string, { name: string; departmentId?: string }>();
-    for (const u of users) {
-      userByUserId.set(u.userId, { name: u.name, departmentId: u.departmentId });
-    }
-    userByUserId.set(me.userId, { name: me.name, departmentId: myDeptId });
-
-    const passcodesById = new Map(passcodes.map(p => [String(p._id), p]));
-
-    for (const r of registry.onSiteRecords) {
-      if (r.passcodeId && registry.deniedPasscodeIds[r.passcodeId]) continue;
-      if (r.codeHash && registry.deniedCodeHashes[r.codeHash]) continue;
-      const linkedPasscode = r.passcodeId ? passcodesById.get(r.passcodeId) : undefined;
-      if (linkedPasscode?.revokedAt) continue;
-
-      const k = r.passcodeId || r.id;
-      const attached =
-        getAttachmentByPasscodeId(r.passcodeId) ||
-        (r.codeHash ? getAttachmentByHash(r.codeHash) : undefined) ||
-        getAttachmentByName(r.visitorName, r.expiresAt ?? linkedPasscode?.expiresAt);
-
-      const resolvedIssuedBy = r.issuedByUserId || linkedPasscode?.issuedBy || attached?.issuedByUserId;
-      const resolvedDeptId = r.hostDepartmentId || linkedPasscode?.hostDepartmentId || attached?.hostDepartmentId;
-      const resolvedDeptName = r.deptName || (resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General");
-
-      const co = r.passcodeId ? registry.checkedOutPasscodeIds[r.passcodeId] : undefined;
-      const resolvedCheckedOutAt = r.checkedOutAt ?? (linkedPasscode as any)?.checkedOutAt ?? co?.checkedOutAt;
-      const resolvedCheckedOutBy = r.checkedOutBy ?? (linkedPasscode as any)?.checkedOutBy ?? co?.checkedOutBy;
-      const resolvedCheckoutNotes = r.checkoutNotes ?? (linkedPasscode as any)?.checkoutNotes ?? co?.checkoutNotes;
-
-      map.set(k, {
-        key: k,
-        recordId: r.id,
-        passcodeId: r.passcodeId,
-        issuedByUserId: resolvedIssuedBy,
-        hostDepartmentId: resolvedDeptId,
-        visitorName: r.visitorName,
-        company: r.company,
-        kind: r.kind,
-        hostName: r.hostName || (linkedPasscode as any)?.hostName || attached?.hostName || "Staff Host",
-        deptName: resolvedDeptName,
-        badgeNumber: r.badgeNumber,
-        idType: r.idType,
-        idNumber: r.idNumber,
-        phone: r.phone,
-        vehiclePlate: r.vehiclePlate,
-        purpose: r.purpose,
-        checkedInAt: r.checkedInAt,
-        checkedInBy: r.checkedInBy,
-        expiresAt: r.expiresAt ?? linkedPasscode?.expiresAt ?? attached?.expiresAt,
-        checkedOutAt: resolvedCheckedOutAt,
-        checkedOutBy: resolvedCheckedOutBy,
-        checkoutNotes: resolvedCheckoutNotes,
-      });
-    }
-
-    for (const p of passcodes) {
-      if ((!p.usedAt && !(p as any).checkedInAt) || p.revokedAt) continue;
-      if (registry.deniedPasscodeIds[p._id]) continue;
-      const co = registry.checkedOutPasscodeIds[p._id];
-      const resolvedCheckedOutAt = (p as any).checkedOutAt ?? co?.checkedOutAt;
-      const resolvedCheckedOutBy = (p as any).checkedOutBy ?? co?.checkedOutBy;
-      const resolvedCheckoutNotes = (p as any).checkoutNotes ?? co?.checkoutNotes;
-
-      if (map.has(p._id)) {
-        const existing = map.get(p._id)!;
-        if (!existing.checkedOutAt && resolvedCheckedOutAt) {
-          existing.checkedOutAt = resolvedCheckedOutAt;
-          existing.checkedOutBy = resolvedCheckedOutBy ?? existing.checkedOutBy;
-          existing.checkoutNotes = resolvedCheckoutNotes ?? existing.checkoutNotes;
-        }
-        continue;
-      }
-
-      const attached = getAttachmentByPasscodeId(p._id) ?? getAttachmentByName(p.visitorName, p.expiresAt);
-      if (attached?.codeHash && registry.deniedCodeHashes[attached.codeHash]) continue;
-
-      const issuer = userByUserId.get(p.issuedBy);
-      const resolvedHostName = (p as any).hostName || attached?.hostName || issuer?.name || "Staff Host";
-      const resolvedDeptId = p.hostDepartmentId || issuer?.departmentId || attached?.hostDepartmentId;
-      map.set(p._id, {
+    const myDeptId = me.departmentId ?? depts[0]?._id;
+    const onSite = passcodes.flatMap(p => {
+      const checkedInAt = p.checkedInAt ?? p.usedAt;
+      if (!checkedInAt || p.revokedAt) return [];
+      return [{
         key: p._id,
         passcodeId: p._id,
         issuedByUserId: p.issuedBy,
-        hostDepartmentId: resolvedDeptId,
+        hostDepartmentId: p.hostDepartmentId,
         visitorName: p.visitorName,
-        company: p.company || attached?.company,
+        company: p.company,
         kind: p.kind,
-        hostName: resolvedHostName,
-        deptName: resolvedDeptId ? deptName(resolvedDeptId) : attached?.deptName ?? "General",
-        badgeNumber: (p as any).badgeNumber || "GATE-PASS",
-        idType: (p as any).idType || "Passcode",
-        idNumber: attached?.idNumber,
-        phone: attached?.phone,
-        vehiclePlate: (p as any).vehiclePlate || attached?.vehiclePlate,
-        purpose: attached?.purpose,
-        checkedInAt: (p as any).checkedInAt ?? p.usedAt,
-        checkedInBy: (p as any).checkedInBy ?? "Gate Security",
+        hostName: p.hostName ?? "Staff Host",
+        deptName: p.hostDepartmentId ? deptName(p.hostDepartmentId) : "General",
+        badgeNumber: p.badgeNumber ?? "GATE-PASS",
+        idType: p.idType ?? "Passcode",
+        idNumber: p.idNumber,
+        phone: p.phone,
+        vehiclePlate: p.vehiclePlate,
+        purpose: p.purpose,
+        checkedInAt,
+        checkedInBy: p.checkedInBy ?? "Gate Security",
         expiresAt: p.expiresAt,
-        checkedOutAt: resolvedCheckedOutAt,
-        checkedOutBy: resolvedCheckedOutBy,
-        checkoutNotes: resolvedCheckoutNotes,
-      });
-    }
+        checkedOutAt: p.checkedOutAt,
+        checkedOutBy: p.checkedOutBy,
+        checkoutNotes: p.checkoutNotes,
+      } satisfies UnifiedOnSitePerson];
+    });
 
     // Strict RBAC & BOLA Filtering:
     // - admin & security: see all department logs
     // - report (Department Head): see ONLY their bound department's records
     // - staff: see ONLY records belonging to their bound department AND individually issued by them
-    const effectiveRole = getEffectiveRole(me);
-    const rawList = Array.from(map.values()).sort((a, b) => b.checkedInAt - a.checkedInAt);
+    const effectiveRole = me.role;
+    const rawList = onSite.sort((a, b) => b.checkedInAt - a.checkedInAt);
     const scopedList = rawList.filter(item => {
       if (effectiveRole === "admin" || effectiveRole === "security") return true;
-      const matchesMyDept =
-        (myDeptId && item.hostDepartmentId === myDeptId) ||
-        item.deptName.toLowerCase() === myDeptName.toLowerCase();
+      const matchesMyDept = Boolean(myDeptId && item.hostDepartmentId === myDeptId);
       if (effectiveRole === "report") {
         return matchesMyDept;
       }
@@ -245,14 +132,11 @@ export function useUnifiedOnSiteList() {
       checkedOutHistory: scopedList.filter(x => !!x.checkedOutAt),
       all: scopedList,
     };
-  }, [passcodes, depts, users, me, registry]);
+  }, [passcodes, depts, me]);
 }
 
 type PendingCandidate = {
-  code: string;
-  codeHash: string;
-  alreadyValidatedOnServer: boolean;
-  passcodeId?: string;
+  passcodeId: Id<"passcodes">;
   issuedByUserId?: string;
   visitorName: string;
   company?: string;
@@ -271,26 +155,16 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const inspectPasscode = useMutation(api.passcodes.inspect);
   const checkInMutation = useMutation(api.passcodes.checkIn);
   const checkOutMutation = useMutation(api.passcodes.checkOut);
-  const revoke = useMutation(api.passcodes.revoke);
+  const reject = useMutation(api.passcodes.reject);
   const remotePasscodes = useQuery(api.passcodes.list) ?? [];
   const remoteDepts = useQuery(api.departments.list) ?? [];
   const remoteUsers = useQuery(api.users.list) ?? [];
   const me = useQuery(api.users.me);
-  const registry = useGateRegistry();
   const { activeOnSite } = useUnifiedOnSiteList();
 
-  const passcodes = useMemo(
-    () => getMergedPasscodes(remotePasscodes as any),
-    [remotePasscodes, registry.localPasscodes, registry.revokedPasscodeIds, registry.usedPasscodeTimestamps]
-  );
-  const depts = useMemo(
-    () => getMergedDepartments(remoteDepts as any),
-    [remoteDepts, registry.localDepartments, registry.removedDepartmentIds]
-  );
-  const users = useMemo(
-    () => getMergedUserDirectory(remoteUsers as any, me as any),
-    [remoteUsers, me, registry.registeredProfiles, registry.userRoleOverrides, registry.userDepartmentOverrides]
-  );
+  const passcodes = remotePasscodes;
+  const depts = remoteDepts;
+  const users = remoteUsers;
 
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -320,8 +194,8 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   };
 
   // RBAC Guard: Only Admin and Security can operate the Gate Check terminal
-  const effectiveRole = me ? getEffectiveRole(me) : "staff";
-  if (me && effectiveRole !== "admin" && effectiveRole !== "security") {
+  const effectiveRole = me?.role ?? "staff";
+  if (me && (me.active !== true || (effectiveRole !== "admin" && effectiveRole !== "security"))) {
     return (
       <div className="panel">
         <p className="status-err">Access restricted to Security &amp; Administrators.</p>
@@ -339,7 +213,6 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
   const handleInspectCode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!verifyCsrfToken(getCsrfToken())) return;
     const clean = code.trim();
     if (!/^\d{6}$/.test(clean)) return;
 
@@ -348,125 +221,11 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
     setPendingGuest(null);
 
     try {
-      const hash = await sha256Hex(clean);
       const now = Date.now();
-
-      if (registry.deniedCodeHashes[hash]) {
-        setBanner({
-          type: "denied",
-          title: "DENIED AT GATE",
-          text: `This passcode was previously rejected at the gate (${registry.deniedCodeHashes[hash].reason}).`,
-          at: now,
-        });
-        setCode("");
+      const r = await inspectPasscode({ code: clean });
+      if (!r.ok) {
+        setBanner({ type: "denied", title: "VALIDATION FAILED", text: r.error ?? "Server rejected validation", at: now });
         return;
-      }
-
-      const localAttachment = getAttachmentByHash(hash);
-
-      if (localAttachment) {
-        const matchingRow =
-          (localAttachment.passcodeId
-            ? passcodes.find(p => String(p._id) === localAttachment.passcodeId)
-            : undefined) ??
-          passcodes.find(
-            p =>
-              p.visitorName.trim().toLowerCase() === localAttachment.visitorName.trim().toLowerCase() &&
-              Math.abs(p.expiresAt - localAttachment.expiresAt) < 120_000
-          );
-
-        if (matchingRow && registry.deniedPasscodeIds[matchingRow._id]) {
-          setBanner({
-            type: "denied",
-            title: "DENIED AT GATE",
-            text: `${localAttachment.visitorName} was previously rejected at the gate.`,
-            at: now,
-          });
-          setCode("");
-          return;
-        }
-        if (matchingRow?.revokedAt) {
-          setBanner({
-            type: "denied",
-            title: "REVOKED",
-            text: `${localAttachment.visitorName} passcode was revoked.`,
-            at: now,
-          });
-          setCode("");
-          return;
-        }
-        if (matchingRow?.usedAt) {
-          setBanner({
-            type: "denied",
-            title: "ALREADY USED",
-            text: `Checked in at ${fmt(matchingRow.usedAt)}.`,
-            at: now,
-          });
-          setCode("");
-          return;
-        }
-        const effectiveExpiry = matchingRow?.expiresAt ?? localAttachment.expiresAt;
-        if (effectiveExpiry < now) {
-          setBanner({
-            type: "denied",
-            title: "EXPIRED",
-            text: `Expired at ${fmt(effectiveExpiry)}.`,
-            at: now,
-          });
-          setCode("");
-          return;
-        }
-
-        const nextBadge = getNextAvailableBadge(activeOnSite.map(p => p.badgeNumber));
-        setBadgeInput(nextBadge);
-        setIdNumberInput(localAttachment.idNumber ?? "");
-        setVehicleInput(localAttachment.vehiclePlate ?? "");
-        setGuardNotes("");
-        setIdentityConfirmed(true);
-        setPendingGuest({
-          code: clean,
-          codeHash: hash,
-          alreadyValidatedOnServer: false,
-          passcodeId: matchingRow?._id ?? localAttachment.passcodeId,
-          issuedByUserId: matchingRow?.issuedBy ?? localAttachment.issuedByUserId,
-          visitorName: localAttachment.visitorName,
-          company: localAttachment.company || matchingRow?.company,
-          kind: localAttachment.kind,
-          hostName:
-            localAttachment.hostName ||
-            (matchingRow as any)?.hostName ||
-            hostNameForIssuer(matchingRow?.issuedBy) ||
-            "Staff Host",
-          hostDepartmentId: localAttachment.hostDepartmentId || matchingRow?.hostDepartmentId,
-          deptName: matchingRow?.hostDepartmentId ? deptName(matchingRow.hostDepartmentId) : localAttachment.deptName,
-          phone: localAttachment.phone,
-          idNumber: localAttachment.idNumber,
-          vehiclePlate: localAttachment.vehiclePlate,
-          purpose: localAttachment.purpose,
-          expiresAt: effectiveExpiry,
-        });
-        return;
-      }
-
-      const gateActor = {
-        userId: me?.userId ?? operatorName,
-        name: operatorName,
-        role: effectiveRole,
-      };
-      markGateOperatorActionOnThisDevice();
-      let r: any = null;
-      try {
-        r = await inspectPasscode({ code: clean });
-      } catch {
-        // server fallback
-      }
-      if (!r || !r.ok) {
-        const localCheck = await inspectLocalPasscode(clean, gateActor);
-        if (!localCheck.ok || !localCheck.result) {
-          setBanner({ type: "denied", title: "ERROR", text: localCheck.error ?? "Validation error", at: now });
-          return;
-        }
-        r = localCheck;
       }
 
       if (r.result !== "granted") {
@@ -481,49 +240,34 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       }
 
       const serverPc = r.passcode;
-      const visitorName = serverPc?.visitorName ?? r.visitor ?? "Guest";
-      const row = serverPc
-        ? passcodes.find(p => String(p._id) === String(serverPc._id))
-        : passcodes.find(
-            p =>
-              p.visitorName.trim().toLowerCase() === visitorName.trim().toLowerCase() &&
-              !p.revokedAt &&
-              (!p.usedAt || Math.abs(p.usedAt - now) < 60_000)
-          );
-      const targetPasscodeId = serverPc?._id ?? row?._id;
-      const byName = getAttachmentByPasscodeId(targetPasscodeId) ?? getAttachmentByName(visitorName, serverPc?.expiresAt ?? row?.expiresAt);
+      if (!serverPc) {
+        setBanner({ type: "denied", title: "VALIDATION FAILED", text: "Server returned no passcode record.", at: now });
+        return;
+      }
       const nextBadge = getNextAvailableBadge(activeOnSite.map(p => p.badgeNumber));
       setBadgeInput(nextBadge);
-      setIdNumberInput(byName?.idNumber ?? "");
-      setVehicleInput(byName?.vehiclePlate ?? "");
+      setIdNumberInput(serverPc.idNumber ?? "");
+      setVehicleInput(serverPc.vehiclePlate ?? "");
       setGuardNotes("");
       setIdentityConfirmed(true);
 
       setPendingGuest({
-        code: clean,
-        codeHash: hash,
-        alreadyValidatedOnServer: true,
-        passcodeId: targetPasscodeId,
-        issuedByUserId: serverPc?.issuedBy ?? row?.issuedBy ?? byName?.issuedByUserId,
-        visitorName: serverPc?.visitorName ?? visitorName,
-        company: serverPc?.company ?? row?.company ?? byName?.company,
-        kind: serverPc?.kind ?? row?.kind ?? byName?.kind ?? "visitor",
-        hostName:
-          serverPc?.hostName ??
-          (row as any)?.hostName ??
-          byName?.hostName ??
-          hostNameForIssuer(serverPc?.issuedBy ?? row?.issuedBy) ??
-          operatorName,
-        hostDepartmentId: serverPc?.hostDepartmentId ?? row?.hostDepartmentId ?? byName?.hostDepartmentId,
-        deptName: (serverPc?.hostDepartmentId ?? row?.hostDepartmentId)
-          ? deptName(serverPc?.hostDepartmentId ?? row!.hostDepartmentId)
-          : byName?.deptName ?? "General",
-        phone: byName?.phone,
-        idNumber: byName?.idNumber,
-        vehiclePlate: byName?.vehiclePlate,
-        purpose: byName?.purpose,
-        expiresAt: serverPc?.expiresAt ?? row?.expiresAt ?? byName?.expiresAt,
+        passcodeId: serverPc._id,
+        issuedByUserId: serverPc.issuedBy,
+        visitorName: serverPc.visitorName,
+        company: serverPc.company,
+        kind: serverPc.kind,
+        hostName: serverPc.hostName ?? hostNameForIssuer(serverPc.issuedBy) ?? operatorName,
+        hostDepartmentId: serverPc.hostDepartmentId,
+        deptName: serverPc.hostDepartmentId ? deptName(serverPc.hostDepartmentId) : "General",
+        phone: serverPc.phone,
+        idNumber: serverPc.idNumber,
+        vehiclePlate: serverPc.vehiclePlate,
+        purpose: serverPc.purpose,
+        expiresAt: serverPc.expiresAt,
       });
+    } catch {
+      setBanner({ type: "denied", title: "SERVER UNAVAILABLE", text: "Passcode was not validated. Check the connection and retry.", at: Date.now() });
     } finally {
       setBusy(false);
     }
@@ -532,7 +276,6 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   const handleCompleteCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pendingGuest) return;
-    if (!verifyCsrfToken(getCsrfToken())) return;
 
     const now = Date.now();
     const normalizedBadge = sanitizeText(badgeInput, 24).toUpperCase();
@@ -546,97 +289,22 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       return;
     }
 
-    const duplicateBadgeHolder = activeOnSite.find(
-      p => p.badgeNumber.trim().toUpperCase() === normalizedBadge && p.passcodeId !== pendingGuest.passcodeId
-    );
-    if (duplicateBadgeHolder) {
-      setBanner({
-        type: "denied",
-        title: "DUPLICATE BADGE",
-        text: `Badge ${normalizedBadge} is currently assigned to ${duplicateBadgeHolder.visitorName} on site.`,
-        at: now,
-      });
-      return;
-    }
-
-    if (pendingGuest.expiresAt && pendingGuest.expiresAt < now) {
-      setBanner({
-        type: "denied",
-        title: "EXPIRED",
-        text: `Passcode expired at ${fmt(pendingGuest.expiresAt)} before check-in could be completed.`,
-        at: now,
-      });
-      setPendingGuest(null);
-      setCode("");
-      return;
-    }
-
-    const liveRow = pendingGuest.passcodeId
-      ? passcodes.find(p => String(p._id) === pendingGuest.passcodeId)
-      : undefined;
-    if (liveRow?.revokedAt) {
-      setBanner({
-        type: "denied",
-        title: "REVOKED",
-        text: `Passcode for ${pendingGuest.visitorName} was revoked before check-in.`,
-        at: now,
-      });
-      setPendingGuest(null);
-      setCode("");
-      return;
-    }
-
     setBusy(true);
     try {
-      markGateOperatorActionOnThisDevice();
-      const checkInTime = Date.now();
-      const isConvexId = pendingGuest.passcodeId && !String(pendingGuest.passcodeId).startsWith("pc_");
-
-      if (isConvexId) {
-        try {
-          await checkInMutation({
-            passcodeId: pendingGuest.passcodeId as any,
-            badgeNumber: normalizedBadge,
-            idType: idTypeInput,
-            idNumber: sanitizeText(idNumberInput, 40) || pendingGuest.idNumber,
-            vehiclePlate: sanitizeText(vehicleInput, 24).toUpperCase() || pendingGuest.vehiclePlate,
-            guardNotes: sanitizeText(guardNotes, 160) || undefined,
-          });
-        } catch (serverErr) {
-          console.warn("Convex checkIn mutation error (will proceed with local fallback):", serverErr);
-        }
-      } else {
-        const gateActor = {
-          userId: me?.userId ?? operatorName,
-          name: operatorName,
-          role: effectiveRole,
-        };
-        await validateLocalPasscode(pendingGuest.code, gateActor, { claim: true });
-      }
-
-      recordGuestCheckIn({
+      const result = await checkInMutation({
         passcodeId: pendingGuest.passcodeId,
-        codeHash: pendingGuest.codeHash,
-        issuedByUserId: pendingGuest.issuedByUserId,
-        visitorName: pendingGuest.visitorName,
-        company: pendingGuest.company,
-        kind: pendingGuest.kind,
-        hostName: pendingGuest.hostName,
-        hostDepartmentId: pendingGuest.hostDepartmentId,
-        deptName: pendingGuest.deptName,
-        phone: pendingGuest.phone,
+        badgeNumber: normalizedBadge,
         idType: idTypeInput,
         idNumber: sanitizeText(idNumberInput, 40) || pendingGuest.idNumber,
-        badgeNumber: normalizedBadge,
         vehiclePlate: sanitizeText(vehicleInput, 24).toUpperCase() || pendingGuest.vehiclePlate,
-        purpose: pendingGuest.purpose,
-        notes: sanitizeText(guardNotes, 160) || undefined,
-        checkedInAt: checkInTime,
-        checkedInBy: operatorName,
-        checkedInByUserId: me?.userId,
-        expiresAt: pendingGuest.expiresAt,
+        guardNotes: sanitizeText(guardNotes, 160) || undefined,
       });
+      if (!result.ok) {
+        setBanner({ type: "denied", title: "CHECK-IN REJECTED", text: result.error ?? "Server rejected check-in.", at: Date.now() });
+        return;
+      }
 
+      const checkInTime = Date.now();
       setBanner({
         type: "granted",
         title: "CHECKED IN",
@@ -645,6 +313,8 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       });
       setPendingGuest(null);
       setCode("");
+    } catch {
+      setBanner({ type: "denied", title: "SERVER UNAVAILABLE", text: "Check-in was not recorded. Retry when connected.", at: Date.now() });
     } finally {
       setBusy(false);
     }
@@ -652,34 +322,13 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
 
   const handleRejectMismatch = async () => {
     if (!pendingGuest) return;
-    if (!verifyCsrfToken(getCsrfToken())) return;
     setBusy(true);
     try {
       const reason = sanitizeText(guardNotes, 160) || "Identity mismatch at gate";
-      recordGateDenial({
-        passcodeId: pendingGuest.passcodeId,
-        codeHash: pendingGuest.codeHash,
-        deniedBy: operatorName,
-        reason,
-        visitorName: pendingGuest.visitorName,
-        hostName: pendingGuest.hostName,
-        deptName: pendingGuest.deptName,
-      });
-      if (pendingGuest.passcodeId && !pendingGuest.alreadyValidatedOnServer) {
-        const gateActor = {
-          userId: me?.userId ?? operatorName,
-          name: operatorName,
-          role: effectiveRole,
-        };
-        if (pendingGuest.passcodeId.startsWith("pc_")) {
-          revokeLocalPasscode(pendingGuest.passcodeId, gateActor);
-        } else {
-          try {
-            await revoke({ id: pendingGuest.passcodeId as Id<"passcodes"> });
-          } catch {
-            revokeLocalPasscode(pendingGuest.passcodeId, gateActor);
-          }
-        }
+      const result = await reject({ passcodeId: pendingGuest.passcodeId, reason });
+      if (!result.ok) {
+        setBanner({ type: "denied", title: "DENIAL NOT RECORDED", text: result.error ?? "Server rejected denial.", at: Date.now() });
+        return;
       }
       setBanner({
         type: "denied",
@@ -689,6 +338,8 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
       });
       setPendingGuest(null);
       setCode("");
+    } catch {
+      setBanner({ type: "denied", title: "SERVER UNAVAILABLE", text: "Denial was not recorded. Retry when connected.", at: Date.now() });
     } finally {
       setBusy(false);
     }
@@ -718,9 +369,7 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
               <ClipboardCheck size={18} style={{ color: "var(--sig)" }} />
               <h2 className="panel-title">Verify Guest Details</h2>
             </div>
-            <span className="mono" style={{ fontWeight: 700, fontSize: 14 }}>
-              Code: {pendingGuest.code.slice(0, 3)} {pendingGuest.code.slice(3)}
-            </span>
+            <span className="status-ok">Passcode verified</span>
           </div>
 
           <div className="dossier-grid">
@@ -968,39 +617,21 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
                             className="pri"
                             style={{ minHeight: 28, padding: "2px 8px", fontSize: 12 }}
                             onClick={async () => {
-                              if (!verifyCsrfToken(getCsrfToken())) return;
                               const cleanNotes = checkoutNote.trim() || "Checked out";
-                              const isConvexId = person.passcodeId && !String(person.passcodeId).startsWith("pc_");
-                              if (isConvexId) {
-                                try {
-                                  await checkOutMutation({
-                                    passcodeId: person.passcodeId as any,
-                                    checkoutNotes: cleanNotes,
-                                  });
-                                } catch (err) {
-                                  console.warn("Convex checkOut mutation error:", err);
+                              try {
+                                const result = await checkOutMutation({
+                                  passcodeId: person.passcodeId,
+                                  checkoutNotes: cleanNotes,
+                                });
+                                if (!result.ok) {
+                                  setBanner({ type: "denied", title: "CHECK-OUT REJECTED", text: result.error ?? "Server rejected check-out.", at: Date.now() });
+                                  return;
                                 }
+                                setCheckoutConfirmKey(null);
+                                setCheckoutNote("");
+                              } catch {
+                                setBanner({ type: "denied", title: "SERVER UNAVAILABLE", text: "Check-out was not recorded. Retry when connected.", at: Date.now() });
                               }
-                              recordGuestCheckOut({
-                                recordId: person.recordId,
-                                passcodeId: person.passcodeId,
-                                checkedOutBy: operatorName,
-                                checkedOutByUserId: me?.userId,
-                                checkoutNotes: cleanNotes,
-                                fallbackVisitor: {
-                                  visitorName: person.visitorName,
-                                  company: person.company,
-                                  kind: person.kind,
-                                  issuedByUserId: person.issuedByUserId,
-                                  hostName: person.hostName,
-                                  hostDepartmentId: person.hostDepartmentId,
-                                  deptName: person.deptName,
-                                  checkedInAt: person.checkedInAt,
-                                  expiresAt: person.expiresAt,
-                                },
-                              });
-                              setCheckoutConfirmKey(null);
-                              setCheckoutNote("");
                             }}
                           >
                             Confirm
@@ -1044,7 +675,6 @@ export function Gate({ operatorName, onNavigateOnSite }: { operatorName: string;
   );
 }
 
-/* ==================== PERSONS ON SITE MODULE ==================== */
 export function PersonsOnSite({
   operatorName,
   canManage,
@@ -1055,13 +685,13 @@ export function PersonsOnSite({
   canExport: boolean;
 }) {
   const checkOutMutation = useMutation(api.passcodes.checkOut);
-  const me = useQuery(api.users.me);
   const { activeOnSite, checkedOutHistory, all } = useUnifiedOnSiteList();
   const [view, setView] = useState<"active" | "departed" | "all">("active");
   const [search, setSearch] = useState("");
   const [kindFilter, setKindFilter] = useState<"all" | "visitor" | "contractor" | "supplier">("all");
   const [checkoutKey, setCheckoutKey] = useState<string | null>(null);
   const [exitRemarks, setExitRemarks] = useState("");
+  const [checkoutError, setCheckoutError] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -1151,6 +781,7 @@ export function PersonsOnSite({
           </div>
         )}
       </div>
+      {checkoutError && <p className="status-err" role="alert">{checkoutError}</p>}
 
       <section className="kpi-strip" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
         <div className="kpi-cell">
@@ -1281,39 +912,22 @@ export function PersonsOnSite({
                               className="pri"
                               style={{ minHeight: 28, padding: "2px 10px", fontSize: 12 }}
                               onClick={async () => {
-                                if (!verifyCsrfToken(getCsrfToken())) return;
+                                setCheckoutError("");
                                 const cleanRemarks = exitRemarks.trim() || "Checked out";
-                                const isConvexId = person.passcodeId && !String(person.passcodeId).startsWith("pc_");
-                                if (isConvexId) {
-                                  try {
-                                    await checkOutMutation({
-                                      passcodeId: person.passcodeId as any,
-                                      checkoutNotes: cleanRemarks,
-                                    });
-                                  } catch (err) {
-                                    console.warn("Convex checkOut mutation error:", err);
+                                try {
+                                  const result = await checkOutMutation({
+                                    passcodeId: person.passcodeId,
+                                    checkoutNotes: cleanRemarks,
+                                  });
+                                  if (!result.ok) {
+                                    setCheckoutError(result.error ?? "Server rejected check-out.");
+                                    return;
                                   }
+                                  setCheckoutKey(null);
+                                  setExitRemarks("");
+                                } catch {
+                                  setCheckoutError("Check-out was not recorded. Retry when connected.");
                                 }
-                                recordGuestCheckOut({
-                                  recordId: person.recordId,
-                                  passcodeId: person.passcodeId,
-                                  checkedOutBy: operatorName,
-                                  checkedOutByUserId: me?.userId,
-                                  checkoutNotes: cleanRemarks,
-                                  fallbackVisitor: {
-                                    visitorName: person.visitorName,
-                                    company: person.company,
-                                    kind: person.kind,
-                                    issuedByUserId: person.issuedByUserId,
-                                    hostName: person.hostName,
-                                    hostDepartmentId: person.hostDepartmentId,
-                                    deptName: person.deptName,
-                                    checkedInAt: person.checkedInAt,
-                                    expiresAt: person.expiresAt,
-                                  },
-                                });
-                                setCheckoutKey(null);
-                                setExitRemarks("");
                               }}
                             >
                               Confirm

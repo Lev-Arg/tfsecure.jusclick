@@ -21,6 +21,7 @@ const CONVEX_URL = resolveConvexUrl(import.meta.env.VITE_CONVEX_URL as string | 
 const convex = new ConvexReactClient(CONVEX_URL, {
   logger: false,
   skipConvexDeploymentUrlCheck: true,
+  verbose: true,
 });
 
 createRoot(document.getElementById("root")!).render(

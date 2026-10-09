@@ -1,12 +1,11 @@
 import React, { useEffect } from "react";
 import tfLogoExact from "../assets/images/tflogo1.png";
-import corporateFacilityImg from "../assets/images/corporate_facility_bg_1790827662470.jpg";
-import securityCheckpointImg from "../assets/images/security_checkpoint_login_1790827675252.jpg";
+import facilityWorkspaceBg from "../assets/images/facility-background.webp";
 import { useGateRegistry } from "../lib/gateRegistry";
 
 export const DEFAULT_TF_LOGO = tfLogoExact;
-export const CORPORATE_FACILITY_BG = corporateFacilityImg;
-export const SECURITY_CHECKPOINT_IMG = securityCheckpointImg;
+export const CORPORATE_FACILITY_BG = facilityWorkspaceBg;
+export const SECURITY_CHECKPOINT_IMG = "/security_guard_visitor_id.png";
 
 /**
  * Generates a square 192x192 / 512x512 icon data URL from the active dashboard logo
@@ -155,7 +154,6 @@ export function TfLogo({
     return (
       <div
         className="tf-logo-exact-wrap tf-logo-fill-wrap"
-        title="TF Commodities — System Logo"
       >
         <img
           src={logoSrc}
@@ -174,11 +172,10 @@ export function TfLogo({
     return (
       <div
         className="tf-logo-exact-wrap tf-system-icon-badge"
-        title="TFsecure System Icon"
       >
         <img
           src={logoSrc}
-          alt="TFsecure System Icon"
+          alt="Jusclick System Icon"
           referrerPolicy="no-referrer"
           className="tf-logo-exact-img tf-logo-force-light"
           style={{
@@ -196,7 +193,7 @@ export function TfLogo({
   const height = size === "lg" ? 92 : size === "md" ? 64 : 42;
 
   return (
-    <div className="tf-logo-exact-wrap" title="TF Commodities — System Logo">
+    <div className="tf-logo-exact-wrap">
       <img
         src={logoSrc}
         alt="TF Commodities — System Logo"

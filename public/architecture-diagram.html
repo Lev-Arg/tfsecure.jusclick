@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jusclick-TeQiQ System Architecture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+        color: #252a29;
+        background: #f3f5f2;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 18px; }
+      h1, h2, h3, p { margin: 0; }
+      .diagram { max-width: 1380px; margin: 0 auto; }
+      .heading { margin-bottom: 18px; }
+      .eyebrow { color: #82512c; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+      h1 { margin-top: 4px; font-size: 22px; line-height: 1.2; }
+      .intro { margin-top: 5px; color: #58615d; font-size: 13px; }
+
+      .architecture-flow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1fr) 84px minmax(0, 1fr);
+        align-items: stretch;
+        gap: 10px;
+      }
+
+      .layer {
+        min-width: 0;
+        padding: 16px;
+        background: #fff;
+        border: 1px solid #d5dcd5;
+        border-top: 3px solid #762a22;
+        border-radius: 6px;
+      }
+
+      .layer.auth { border-top-color: #a46b27; }
+      .layer.data { border-top-color: #326b58; }
+      .layer-tag { color: #6c7771; font: 700 10px/1.3 monospace; letter-spacing: 0.04em; }
+      h2 { margin-top: 6px; font-size: 16px; }
+      .layer p { margin-top: 5px; color: #58615d; font-size: 12px; line-height: 1.45; }
+      .layer ul { display: grid; gap: 6px; margin: 12px 0 0; padding-left: 17px; font-size: 12px; line-height: 1.4; }
+
+      .connector {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: #56615b;
+        text-align: center;
+        font-size: 10px;
+        line-height: 1.25;
+      }
+
+      .arrow { position: relative; width: 100%; height: 1px; background: #9c6b3a; }
+      .arrow::after {
+        position: absolute;
+        top: -4px;
+        right: 0;
+        width: 8px;
+        height: 8px;
+        content: "";
+        border-top: 1px solid #9c6b3a;
+        border-right: 1px solid #9c6b3a;
+        transform: rotate(45deg);
+      }
+
+      .flow-panel, .sync-panel, .notes {
+        margin-top: 14px;
+        padding: 14px 16px;
+        background: #fff;
+        border: 1px solid #d5dcd5;
+        border-radius: 6px;
+      }
+
+      .panel-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+      .panel-heading h2 { margin: 0; font-size: 14px; }
+      .panel-heading p { color: #68736c; font-size: 11px; }
+      .steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+      .step {
+        position: relative;
+        min-width: 0;
+        padding: 10px;
+        background: #f4f5f2;
+        border-left: 2px solid #9c6b3a;
+        border-radius: 4px;
+      }
+      .step strong { display: block; font-size: 12px; }
+      .step span { display: block; margin-top: 4px; color: #58615d; font-size: 11px; line-height: 1.4; }
+
+      .sync-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px minmax(0, 1fr) 84px minmax(0, 1fr); align-items: center; gap: 10px; }
+      .sync-node { padding: 12px; background: #f7f8f6; border: 1px solid #d5dcd5; border-radius: 5px; }
+      .sync-node strong { display: block; font-size: 12px; }
+      .sync-node span { display: block; margin-top: 4px; color: #58615d; font-size: 11px; line-height: 1.4; }
+      .notes { display: flex; justify-content: space-between; gap: 16px; color: #58615d; font-size: 11px; line-height: 1.45; }
+      .notes strong { color: #252a29; }
+
+      @media (max-width: 760px) {
+        body { padding: 12px; }
+        h1 { font-size: 19px; }
+        .architecture-flow, .sync-row { grid-template-columns: 1fr; gap: 8px; }
+        .connector { min-height: 32px; flex-direction: row; }
+        .arrow { width: 1px; height: 22px; }
+        .arrow::after { top: auto; right: -4px; bottom: 0; transform: rotate(135deg); }
+        .steps { grid-template-columns: 1fr; }
+        .panel-heading, .notes { align-items: flex-start; flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="diagram">
+      <header class="heading">
+      <p class="eyebrow">architecture</p>
+        <h1>Jusclick-TeQiQ</h1>
+        <p class="intro">Browser and gate workflows, authenticated application services, and data boundaries.</p>
+      </header>
+
+      <section class="architecture-flow" aria-label="Application architecture layers">
+        <article class="layer client">
+          <span class="layer-tag">01 / CLIENT</span>
+          <h2>Web app / PWA</h2>
+          <p>React interface for staff, security operators, and administrators.</p>
+          <ul>
+            <li>Issue and manage visit passcodes</li>
+            <li>Inspect credentials and record gate activity</li>
+            <li>Role-aware views, reports, and documentation</li>
+          </ul>
+        </article>
+
+        <div class="connector" aria-hidden="true"><span>Session<br />and API calls</span><i class="arrow"></i></div>
+
+        <article class="layer auth">
+          <span class="layer-tag">02 / APPLICATION</span>
+          <h2>Convex services</h2>
+          <p>Convex Auth manages sign-in; functions enforce identity and permissions server-side.</p>
+          <ul>
+            <li>Queries, mutations, and auth actions</li>
+            <li>Profile, role, and department checks</li>
+            <li>Passcode hashing and gate lockout rules</li>
+          </ul>
+        </article>
+
+        <div class="connector" aria-hidden="true"><span>Authorized<br />reads / writes</span><i class="arrow"></i></div>
+
+        <article class="layer data">
+          <span class="layer-tag">03 / PRIMARY DATA</span>
+          <h2>Convex database</h2>
+          <p>Transactional records used by authenticated application functions.</p>
+          <ul>
+            <li>Auth users, profiles, and departments</li>
+            <li>Passcodes, gate events, and failures</li>
+            <li>Audit entries, notifications, and settings</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="flow-panel" aria-labelledby="gate-flow-title">
+        <div class="panel-heading">
+          <h2 id="gate-flow-title">Gate transaction</h2>
+          <p>Code inspection is read-only; a gate operator completes identity review and check-in.</p>
+        </div>
+        <div class="steps">
+          <div class="step"><strong>Issue</strong><span>Authorized user creates a visit and receives a six-digit code.</span></div>
+          <div class="step"><strong>Inspect</strong><span>Server checks code status and expiry; inspection does not consume it.</span></div>
+          <div class="step"><strong>Review</strong><span>Operator follows site identity and entry procedures.</span></div>
+          <div class="step"><strong>Check in</strong><span>Badge and gate event are recorded; the code cannot be reused.</span></div>
+          <div class="step"><strong>Check out</strong><span>Departure is recorded against the visit.</span></div>
+        </div>
+      </section>
+
+      <section class="sync-panel" aria-labelledby="sync-title">
+        <div class="panel-heading">
+          <h2 id="sync-title">Browser and LAN registry sync</h2>
+          <p>Separate from Convex primary records.</p>
+        </div>
+        <div class="sync-row">
+          <div class="sync-node"><strong>Browser registry</strong><span>Local storage holds registry state and selected preferences.</span></div>
+          <div class="connector" aria-hidden="true"><span>HTTP updates<br />event stream</span><i class="arrow"></i></div>
+          <div class="sync-node"><strong>LAN sync service</strong><span><code>/api/Jusclick-sync</code> and its event stream exchange registry updates.</span></div>
+          <div class="connector" aria-hidden="true"><span>Periodic HTTP<br />pulls</span><i class="arrow"></i></div>
+          <div class="sync-node"><strong>Other app clients</strong><span>Clients pull shared state; same-origin tabs also exchange supported fields directly through BroadcastChannel.</span></div>
+        </div>
+      </section>
+
+      <footer class="notes">
+        <span><strong>Identity boundary:</strong> a valid code matches a visit; it does not authenticate the person presenting it.</span>
+        <span><strong>Operations:</strong> retention, backups, and outage procedures remain deployment responsibilities.</span>
+      </footer>
+    </main>
+  </body>
+</html>
